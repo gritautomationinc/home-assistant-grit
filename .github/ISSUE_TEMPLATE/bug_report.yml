@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible problem with the GRIT Hub integration
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Never include API tokens, MQTT credentials, private addresses,
+        hostnames, hub/device IDs, personal data, raw payloads, backups,
+        diagnostics, or unredacted logs. Stop repeated testing if equipment may
+        move.
+  - type: input
+    id: home_assistant_version
+    attributes:
+      label: Home Assistant version
+      placeholder: 2026.3.0
+    validations:
+      required: true
+  - type: input
+    id: integration_version
+    attributes:
+      label: GRIT Hub integration version
+      placeholder: 0.1.0 release candidate or commit ID
+    validations:
+      required: true
+  - type: dropdown
+    id: installation_method
+    attributes:
+      label: Installation method
+      options:
+        - HACS Custom Repository
+        - Manual custom_components copy
+    validations:
+      required: true
+  - type: input
+    id: entity_type
+    attributes:
+      label: Affected entity or platform
+      placeholder: Gate cover, RFID lock, GRITLock, collector switch, setup, or diagnostics
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the safe result you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened without including installation-specific values.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Safe reproduction steps
+      description: Provide the smallest sequence. Do not reproduce an unsafe physical operation.
+    validations:
+      required: true
+  - type: dropdown
+    id: survives_restart
+    attributes:
+      label: Does the problem survive a Home Assistant restart?
+      options:
+        - "Yes"
+        - "No"
+        - Not tested because restart could be unsafe or disruptive
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Manually reviewed redacted logs
+      description: Include only the minimum relevant lines after running redaction and manually checking them.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety and privacy confirmation
+      options:
+        - label: I removed all credentials, addresses, identifiers, personal data, payloads, and private installation details.
+          required: true
+        - label: Reproducing this issue does not require an unsafe or unsupervised physical operation.
+          required: true

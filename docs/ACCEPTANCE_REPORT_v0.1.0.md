@@ -1,0 +1,210 @@
+# v0.1.0 acceptance report
+
+This is an engineering acceptance record, not marketing. It separates
+user-provided live hardware evidence, repository-derived behavior, automated
+offline evidence, and owner decisions.
+
+## 1. Scope
+
+Published `v0.1.0` covers the existing GRIT Hub Home Assistant integration: HACS
+custom-repository packaging, authenticated REST discovery, subscribe-only MQTT
+readiness, documented entities, bounded reconciliation and confirmation,
+reconfiguration, privacy controls, and network-free validation. It adds no new
+device type, command, endpoint, platform, discovery field, or publishing path.
+
+## 2. Build and repository state
+
+- Published version: `0.1.0` in `manifest.json`.
+- Release date: `2026-08-04`.
+- Release commit: [`9464dbab1798cae3b2d0f538d0db3ed64d510884`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/commit/9464dbab1798cae3b2d0f538d0db3ed64d510884).
+- Tag: `v0.1.0`, pointing to the release commit above.
+- GitHub release: [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0).
+- Publication state: the tag, GitHub release, and release notes are published.
+  This report does not assert a HACS default-catalogue submission.
+- Approved owner decisions: GoDeeGo Productions; namespace
+  `GoDeeGo-Productions`; final repository URL
+  `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
+  and GitHub Private Vulnerability Reporting.
+- Operational state: the destination exists, the transfer and final URL are
+  verified, and local `origin` is updated. The repository description, topics,
+  Private Vulnerability Reporting, dependency graph, and Dependabot alerts are
+  enabled and verified.
+
+This closeout records the completed publication without retagging, editing the
+existing release, or changing GitHub settings. Remaining governance and future
+distribution decisions are listed in the
+[Release checklist](RELEASE_CHECKLIST.md).
+
+## 3. Test environment
+
+Live outcomes below were supplied from acceptance testing against a real GRIT
+installation and Home Assistant environment. No address, credential, hub/device
+identifier, customer data, payload, topology, or other installation detail is
+recorded. This release-preparation work itself uses fabricated identifiers,
+fake REST/MQTT clients, bounded waits, and local static validation only.
+
+## 4. Installation acceptance
+
+**Live-validated from the transferred repository URL:** a clean HACS Custom
+Repository installation completed. The normal flow requested the API URL, raw
+token, and certificate preference, discovered the hub ID, and requested only the
+broker address when the API did not provide a usable LAN address. This
+repository remains outside the default HACS catalogue.
+
+## 5. API authentication acceptance
+
+**Live-validated:** authentication succeeded through `GET /api/hub` using the
+raw token as an exact bearer-header value. The current-hub response identified
+the hub. Rejected authentication maps to `invalid_auth`; public health alone is
+not accepted as proof of token access.
+
+## 6. MQTT discovery and readiness acceptance
+
+**Live-validated from the transferred repository URL:** MQTT connected and the
+exact hub-scoped subscription completed with its matching successful SUBACK.
+Internal defaults include port 1883, TLS off, verification on where applicable,
+keepalive 60, and provisional read-only credentials. Normal `connect_async()`
+`None` behavior is accepted. MQTT never publishes. Final live operation produced
+no repetitive benign MQTT warning noise.
+
+**Automated evidence:** fake Paho tests cover lifecycle races, early and stale
+callbacks, exact message-ID handling, reason codes, validation bounds, and
+privacy. Final totals are recorded by the work-package validation report.
+
+## 7. Gate acceptance
+
+**Live-validated:** gates hydrate accurately from retained MQTT, update
+immediately after GRIT-side changes, and Home Assistant gate commands update and
+confirm without false failure. The implementation captures the MQTT boundary
+before REST and requires a newer matching observation. No optimistic or
+unproven REST gate state is used.
+
+## 8. RFID acceptance
+
+**Live-validated:** mixed real reader states hydrate accurately; Home Assistant
+RFID commands update and confirm; GRIT-application changes update promptly; and
+offline readers become unavailable. The strict individual REST `state` is
+authoritative. MQTT `s`/`st` events only trigger bounded debounced refresh and
+no personal RFID user data is retained.
+
+## 9. GRITLock acceptance
+
+**Live-validated:** the system GRITLock locks and unlocks. The bounded REST
+command is `PUT /api/hub/lockout` with a boolean state. Display and confirmation
+use settled current-generation trigger `/gl` MQTT consensus, with strict REST
+trigger fields provisional at startup or after disconnect.
+
+## 10. Collector acceptance
+
+**Live-validated:** the collector turns on and off, and its delayed shutdown
+transition completes without false confirmation. Individual collector detail is
+the deterministic state and confirmation source; a newer online settled match is
+required. No equivalent transition contract is claimed for other switch types.
+
+## 11. Hub control acceptance
+
+**Live-validated:** System LED Brightness and the intended implemented controls
+passed final acceptance. Implemented controls remain Refresh All, per-device
+refresh and locate, GRIT service restart, disabled-by-default Hub reboot, and
+System LED Brightness with post-write REST refresh confirmation. The system
+GRITLock is covered separately.
+
+## 12. Reconfigure and token rotation acceptance
+
+**Live-validated:** replacement token reconfiguration succeeds, device and entity
+identities are preserved, no duplicate devices/entities are created, unrelated
+options remain preserved, and reload occurs once. Validation happens before
+mutation; invalid API or MQTT inputs leave the entry unchanged.
+
+## 13. Restart acceptance
+
+**Live-validated:** Home Assistant restart retains correct integration behavior.
+Setup and reconnect restore bounded MQTT readiness and request fresh telemetry;
+failed setup and unload clean up clients, loops, tasks, waiters, and listeners.
+
+## 14. Clean uninstall and reinstall acceptance
+
+**Live-validated from the transferred repository URL:** clean installation,
+normal uninstall, and deterministic clean reinstall all completed successfully.
+The documented clean-removal boundaries were preserved.
+
+## 15. Offline and failure-mode acceptance
+
+**Automated evidence:** mocked tests exercise connection failure, authentication
+failure, SUBACK failure and timeout, disconnect, cancellation, stale callbacks,
+failed reads, contradictory confirmations, and unload. Bounds and coalescing
+prevent uncontrolled refresh work. No live failure injection is claimed.
+
+## 16. Privacy and redaction acceptance
+
+**Repository-derived:** API and MQTT inputs are allowlisted before retention;
+raw responses and payloads are not entity attributes; API error bodies are not
+read; endpoint logs are bounded; MQTT logs omit topics, identifiers, payloads,
+and credentials; production REST refuses redirects; and no diagnostics-download
+module exists. A bounded log-redaction helper and manual-review checklist are
+provided. Secret and history scans were rerun against the final release commit.
+
+## 17. Automated validation summary
+
+The repository includes standard-library tests for API, authentication, config
+flow, discovery, MQTT, coordinator reconciliation, entities, runtime setup,
+manifest, documentation, and redaction. It also has HACS, Hassfest, and unit-test
+GitHub Actions. Final local network-free validation ran 352 tests successfully;
+one optional real-Paho smoke test was skipped because Paho was intentionally not
+installed. All 31 Python files compiled in memory and parsed as AST, three JSON
+files and seven YAML files parsed, the 512×512 brand image passed PNG structure
+checks, and `git diff --check` passed. The merged HACS, Hassfest, and unit-test CI
+checks are green. The publication-closeout documentation diff is validated
+locally without network or equipment interaction.
+
+## 18. Known limitations
+
+- Experimental unofficial integration and provisional protocol knowledge.
+- Direct MQTT mandatory, QoS 0, and no per-device staleness timer.
+- One hub identity per config entry; limited multi-hub evidence.
+- Dynamic device entity addition/removal requires reload.
+- Provisional vendor-default MQTT credentials await author confirmation.
+- No collector-style confirmation claim for solenoid, latch, or powerbank.
+- Broad imported/generated endpoint catalogue retained for reference.
+- Published as HACS Custom Repository release `v0.1.0`; not in the HACS default catalogue.
+
+## 19. Remaining post-release decisions
+
+Repository transfer, final-URL verification, settings, merged CI, final live
+acceptance, release-commit selection, tag `v0.1.0`, GitHub release, and release
+notes publication are complete. The release is available at
+`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0`.
+
+Maintainer/CODEOWNERS and future commit-identity policy remain unresolved
+non-release governance items. An official GRIT webpage link and any HACS
+default-catalogue submission remain separate future decisions.
+
+## 20. Final acceptance checklist
+
+- [x] GoDeeGo Productions display name and namespace verified.
+- [x] MIT licence and GoDeeGo Productions copyright notice approved.
+- [x] GitHub Private Vulnerability Reporting approved as the security channel.
+- [x] Organization/destination created and repository transferred.
+- [x] Final repository URL and local Git remote verified after transfer.
+- [x] GitHub Private Vulnerability Reporting enabled and verified.
+- [x] Repository description, topics, dependency graph, and Dependabot alerts verified.
+- [ ] Remaining maintainer and commit-identity decisions approved.
+- [x] Full local validation is green on the acceptance-signoff diff.
+- [x] HACS, Hassfest, and unit-test CI are green on the merged baseline.
+- [x] Sensitive-value scan is clean on the acceptance-signoff diff.
+- [x] Complete-history exposure review accepted.
+- [x] Normal uninstall and deterministic clean reinstall passed.
+- [x] Remaining intended controls passed explicitly authorized live acceptance.
+- [x] Canonical local repository URLs updated after transfer.
+- [x] HACS custom installation accepted against the final repository URL.
+- [x] Final release commit is `9464dbab1798cae3b2d0f538d0db3ed64d510884`.
+- [x] Tag `v0.1.0` points to the final release commit.
+- [x] GitHub release and release notes were published on 2026-08-04.
+- [ ] Official GRIT webpage link published.
+- [ ] HACS default catalogue submission decision made.
+
+**Acceptance status:** Final acceptance completed; `v0.1.0` was published on
+2026-08-04.
+
+See [Release checklist](RELEASE_CHECKLIST.md) and return to the
+[README](../README.md).

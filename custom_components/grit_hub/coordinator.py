@@ -1,0 +1,2964 @@
+"""Data update coordinator for GRIT Hub."""
+from __future__ import annotations
+
+import asyncio
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import logging
+import math
+import time
+from typing import Any, Callable
+
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .api import GritHubApiClient, GritHubApiError
+from .const import (
+    DEVICE_TYPES,
+    DOMAIN,
+    REST_DISCOVERY_TIMEOUT,
+    SWITCH_DEVICE_TYPES,
+)
+
+_LOGGER = logging.getLogger(__name__)
+MQTT_STATE_KEY = "_grit_mqtt"
+RFID_ENABLED_KEY = "_grit_rfid_enabled"
+RFID_STATE_GENERATION_KEY = "_grit_rfid_state_generation"
+COLLECTOR_STATE_KEY = "_grit_collector_state"
+COLLECTOR_STATE_CHANGING_KEY = "_grit_collector_state_changing"
+COLLECTOR_STATE_CHANGING_TO_KEY = "_grit_collector_state_changing_to"
+COLLECTOR_ONLINE_KEY = "_grit_collector_online"
+COLLECTOR_STATE_GENERATION_KEY = "_grit_collector_state_generation"
+COLLECTOR_MQTT_BOUNDARY_KEY = "_grit_collector_mqtt_boundary"
+
+_IDENTIFIER_KEYS = (
+    "id",
+    "deviceId",
+    "deviceID",
+    "_id",
+    "uuid",
+    "key",
+    "serialNumber",
+    "serial",
+    "deviceIdentifier",
+)
+_MAX_IDENTIFIER_LENGTH = 128
+_MAX_MESSAGE_TYPE_LENGTH = 128
+_MAX_FIRMWARE_LENGTH = 128
+_MAX_SOURCE_SEQUENCE = (1 << 63) - 1
+_ORDERING_CATEGORIES = ("gate", "state", "online", "rssi", "firmware")
+_FIELD_CATEGORIES = {
+    "position": "gate",
+    "open": "gate",
+    "state": "state",
+    "locked": "state",
+    "online": "online",
+    "rssi": "rssi",
+    "firmware_version": "firmware",
+}
+_STATE_FIELDS = tuple(_FIELD_CATEGORIES)
+_LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
+_FIELD_OBSERVATIONS_KEY = "_field_observations"
+
+_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector")
+_STARTUP_TELEMETRY_DEVICE_TYPES = ("gate", "rfid", "trigger")
+_COMMAND_STATE_FIELDS = {"gate": "open"}
+_LIVE_STATE_FIELDS = {"gate": ("position", "open")}
+_GATE_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
+_GRITLOCK_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
+_RECONCILIATION_CONCURRENCY = 4
+_RECONCILIATION_MAX_TARGETS = 64
+_RECONCILIATION_MAX_PASSES = 2
+_RECONCILIATION_PASS_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_RECONCILIATION_RESPONSE_TIMEOUT = REST_DISCOVERY_TIMEOUT
+_MAX_RFID_STATE_TARGETS = 64
+_RFID_STATE_CONCURRENCY = 4
+_RFID_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_MAX_RFID_READ_TASKS = 64
+_MAX_RFID_EVENT_REFRESHES = 64
+_RFID_EVENT_DEBOUNCE = 0.25
+_MAX_COLLECTOR_STATE_TARGETS = 64
+_COLLECTOR_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_MAX_COLLECTOR_CONFIRM_ATTEMPTS = 64
+_COLLECTOR_CONFIRM_INTERVAL = 0.25
+_MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
+_GRITLOCK_SETTLE_TIME = 0.25
+_MAX_GRITLOCK_OBSERVATIONS = 64
+_GRITLOCK_STARTUP_WINDOW = _RECONCILIATION_RESPONSE_TIMEOUT
+_GRITLOCK_STARTUP_QUIET_TIME = _GRITLOCK_SETTLE_TIME
+_MAX_MQTT_STATE_WAITERS = 64
+
+_GRITLOCK_SOURCE_STARTUP = "startup_status"
+_GRITLOCK_SOURCE_LIVE = "live_gl"
+_GRITLOCK_SOURCE_DISAGREEMENT = "disagreement"
+
+_INVALID = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _GritlockObservation:
+    """One bounded authoritative trigger /gl observation."""
+
+    explicitly_participating: bool
+    locked: bool
+    receive_sequence: int
+    received_monotonic: float
+
+
+@dataclass(slots=True)
+class _GritlockBurst:
+    """One continuous bounded trigger /gl transition burst."""
+
+    connection_generation: int
+    observations: dict[str, _GritlockObservation]
+    overflowed: bool = False
+    last_received_monotonic: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _GritlockStateObservation:
+    """One immutable authoritative GRITLock state observation."""
+
+    state: bool | None
+    connection_generation: int
+    first_receive_sequence: int
+    last_receive_sequence: int
+    source: str
+    participants: frozenset[str]
+
+
+@dataclass(slots=True)
+class _StartupHydration:
+    """One request-bounded gate startup hydration pass."""
+
+    connection_generation: int
+    after_sequence: int
+    requested_targets: set[tuple[str, str]]
+    observed_targets: set[tuple[str, str]]
+    response_events: dict[tuple[str, str], asyncio.Event]
+
+
+@dataclass(slots=True)
+class _GritlockStartupSnapshot:
+    """Bounded status evidence from one ready MQTT connection."""
+
+    connection_generation: int
+    after_sequence: int
+    rest_participants: frozenset[str]
+    rest_participants_usable: bool
+    fallback_candidates: frozenset[str]
+    fallback_usable: bool
+    observations: dict[str, tuple[bool, int]]
+    updated: asyncio.Event
+    deadline_monotonic: float
+    last_received_monotonic: float | None = None
+    overflowed: bool = False
+
+
+def _bounded_text(value: Any, maximum: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > maximum or not value.isprintable():
+        return None
+    return value
+
+
+def _normalize_identifier(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    return _bounded_text(str(value), _MAX_IDENTIFIER_LENGTH)
+
+
+def _normalize_message_type(value: Any) -> str | None:
+    return _bounded_text(value, _MAX_MESSAGE_TYPE_LENGTH)
+
+
+def _strict_bool(value: Any) -> bool | object:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "on", "open", "1"}:
+            return True
+        if normalized in {"false", "off", "closed", "0"}:
+            return False
+    return _INVALID
+
+
+def _strict_binary_bool(value: Any) -> bool | object:
+    """Accept only boolean or integer 0/1 device-state fields."""
+    if isinstance(value, bool):
+        return value
+    return bool(value) if isinstance(value, int) and value in (0, 1) else _INVALID
+
+
+def _gate_position(value: Any) -> int | float | object:
+    """Accept bounded numeric gate position, including firmware text form."""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 16
+            or not normalized.isprintable()
+        ):
+            return _INVALID
+        try:
+            value = float(normalized)
+        except ValueError:
+            return _INVALID
+    bounded = _bounded_number(value, 0, 100)
+    if bounded is _INVALID:
+        return _INVALID
+    if isinstance(bounded, float) and bounded.is_integer():
+        return int(bounded)
+    return bounded
+
+
+def _bounded_number(value: Any, minimum: float, maximum: float) -> int | float | object:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return _INVALID
+    try:
+        finite = math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return _INVALID
+    if not finite or not minimum <= value <= maximum:
+        return _INVALID
+    return value
+
+
+def _firmware(value: Any) -> str | object:
+    bounded = _bounded_text(value, _MAX_FIRMWARE_LENGTH)
+    return bounded if bounded is not None else _INVALID
+
+
+def _source_sequence(value: Any) -> int | object:
+    if isinstance(value, bool):
+        return _INVALID
+    if isinstance(value, int):
+        sequence = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        sequence = int(value)
+    else:
+        return _INVALID
+    if not 0 <= sequence <= _MAX_SOURCE_SEQUENCE:
+        return _INVALID
+    return sequence
+
+
+def _local_receive_sequence(value: Any) -> int | object:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return _INVALID
+    return value
+
+
+def _source_timestamp(value: Any) -> datetime | object:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and len(value) <= 64:
+        candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return _INVALID
+    else:
+        return _INVALID
+    try:
+        offset = parsed.utcoffset()
+    except (OverflowError, TypeError, ValueError):
+        return _INVALID
+    if parsed.tzinfo is None or offset is None:
+        return _INVALID
+    try:
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return _INVALID
+
+
+def _first_valid(
+    payload: dict[str, Any],
+    aliases: tuple[str, ...],
+    converter: Callable[[Any], Any],
+) -> Any:
+    for key in aliases:
+        if key not in payload:
+            continue
+        converted = converter(payload[key])
+        if converted is not _INVALID:
+            return converted
+    return _INVALID
+
+
+def _ordering_value(
+    payload: dict[str, Any],
+    aliases: tuple[str, ...],
+    converter: Callable[[Any], Any],
+) -> tuple[bool, Any]:
+    for key in aliases:
+        if key in payload:
+            return True, converter(payload[key])
+    return False, None
+
+
+def _device_identifiers(device: Any) -> set[str]:
+    if not isinstance(device, dict):
+        return set()
+    identifiers: set[str] = set()
+    for key in _IDENTIFIER_KEYS:
+        normalized = _normalize_identifier(device.get(key))
+        if normalized is not None:
+            identifiers.add(normalized)
+    return identifiers
+
+
+def _telemetry_identifier(device: Any) -> str | None:
+    """Return the documented mesh-device ID used by the telemetry route."""
+    if not isinstance(device, dict):
+        return None
+    return _normalize_identifier(device.get("id"))
+
+
+def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
+    """Return a bounded copy of persisted MQTT state."""
+    if not isinstance(value, dict):
+        return None
+
+    sanitized: dict[str, Any] = {}
+    for field in _STATE_FIELDS:
+        if field not in value:
+            continue
+        raw = value[field]
+        if field in {"open", "state", "locked", "online"}:
+            converted = _strict_bool(raw)
+        elif field == "position":
+            converted = _bounded_number(raw, 0, 100)
+        elif field == "rssi":
+            converted = _bounded_number(raw, -200, 0)
+        else:
+            converted = _firmware(raw)
+        if converted is not _INVALID:
+            sanitized[field] = converted
+
+
+    received_at = _source_timestamp(value.get("last_received_at"))
+    if received_at is not _INVALID:
+        sanitized["last_received_at"] = received_at
+
+    receive_sequence = _local_receive_sequence(
+        value.get(_LOCAL_RECEIVE_SEQUENCE_KEY)
+    )
+    if receive_sequence is not _INVALID:
+        sanitized[_LOCAL_RECEIVE_SEQUENCE_KEY] = receive_sequence
+
+    source_sequence = _source_sequence(value.get("source_sequence"))
+    if source_sequence is not _INVALID:
+        sanitized["source_sequence"] = source_sequence
+
+    source_timestamp = _source_timestamp(value.get("source_timestamp"))
+    if source_timestamp is not _INVALID:
+        sanitized["source_timestamp"] = source_timestamp
+
+    raw_ordering = value.get("_ordering")
+    ordering: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_ordering, dict):
+        for category in _ORDERING_CATEGORIES:
+            raw_marker = raw_ordering.get(category)
+            if not isinstance(raw_marker, dict):
+                continue
+            marker: dict[str, Any] = {}
+            sequence = _source_sequence(raw_marker.get("source_sequence"))
+            if sequence is not _INVALID:
+                marker["source_sequence"] = sequence
+            timestamp = _source_timestamp(raw_marker.get("source_timestamp"))
+            if timestamp is not _INVALID:
+                marker["source_timestamp"] = timestamp
+            if marker:
+                ordering[category] = marker
+    if ordering:
+        sanitized["_ordering"] = ordering
+
+    raw_observations = value.get(_FIELD_OBSERVATIONS_KEY)
+    observations: dict[str, int] = {}
+    if isinstance(raw_observations, dict):
+        for field in _STATE_FIELDS:
+            sequence = _local_receive_sequence(raw_observations.get(field))
+            if sequence is not _INVALID:
+                observations[field] = sequence
+    if observations:
+        sanitized[_FIELD_OBSERVATIONS_KEY] = observations
+
+    return sanitized or None
+
+
+def _preserve_mqtt_state(
+    previous_devices: Any,
+    refreshed_devices: dict[str, Any],
+) -> None:
+    """Transfer sanitized MQTT state across unique same-type identities."""
+    if not isinstance(previous_devices, dict):
+        previous_devices = {}
+
+    for device_type, refreshed_collection in refreshed_devices.items():
+        if not isinstance(refreshed_collection, list):
+            continue
+        previous_collection = previous_devices.get(device_type, [])
+        if not isinstance(previous_collection, list):
+            previous_collection = []
+
+        previous_counts = Counter(
+            identifier
+            for device in previous_collection
+            for identifier in _device_identifiers(device)
+        )
+        refreshed_counts = Counter(
+            identifier
+            for device in refreshed_collection
+            for identifier in _device_identifiers(device)
+        )
+
+        for refreshed in refreshed_collection:
+            if not isinstance(refreshed, dict):
+                continue
+            refreshed.pop(MQTT_STATE_KEY, None)
+            unique_ids = {
+                identifier
+                for identifier in _device_identifiers(refreshed)
+                if previous_counts[identifier] == 1
+                and refreshed_counts[identifier] == 1
+            }
+            if not unique_ids:
+                continue
+            candidates = [
+                previous
+                for previous in previous_collection
+                if isinstance(previous, dict)
+                and unique_ids.intersection(_device_identifiers(previous))
+            ]
+            if len(candidates) != 1:
+                continue
+            state = _sanitize_mqtt_state(candidates[0].get(MQTT_STATE_KEY))
+            if state is not None:
+                refreshed[MQTT_STATE_KEY] = state
+
+        live_fields = _LIVE_STATE_FIELDS.get(device_type)
+        if live_fields is None:
+            continue
+        for previous in previous_collection:
+            if not isinstance(previous, dict):
+                continue
+            state = _sanitize_mqtt_state(previous.get(MQTT_STATE_KEY))
+            if state is None or not any(
+                field in state for field in live_fields
+            ):
+                continue
+            unique_ids = {
+                identifier
+                for identifier in _device_identifiers(previous)
+                if previous_counts[identifier] == 1
+            }
+            if not unique_ids or any(
+                refreshed_counts[identifier] > 0
+                for identifier in unique_ids
+            ):
+                continue
+
+            preserved: dict[str, Any] = {}
+            for key in _IDENTIFIER_KEYS:
+                identifier = _normalize_identifier(previous.get(key))
+                if identifier in unique_ids:
+                    preserved[key] = identifier
+            if not preserved:
+                continue
+            preserved[MQTT_STATE_KEY] = state
+            refreshed_collection.append(preserved)
+
+
+def _payload_state(
+    device_type: str, message_type: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Extract only explicitly allowed fields from one decoded MQTT object."""
+    updates: dict[str, Any] = {}
+    root_message_type = message_type.split("/", 1)[0].lower()
+
+    if device_type == "gate" and root_message_type != "req-tel":
+        position = _first_valid(payload, ("p",), _gate_position)
+        if position is _INVALID:
+            position = _first_valid(
+                payload,
+                ("position",),
+                lambda value: _bounded_number(value, 0, 100),
+            )
+        if position is not _INVALID:
+            updates["position"] = position
+
+        open_aliases = ("open", "state")
+        if root_message_type == "s":
+            open_aliases += ("s",)
+        open_state = _first_valid(payload, open_aliases, _strict_bool)
+        if open_state is not _INVALID:
+            updates["open"] = open_state
+        elif position is not _INVALID:
+            if position >= 75:
+                updates["open"] = True
+            elif position <= 65:
+                updates["open"] = False
+
+    if (
+        device_type in SWITCH_DEVICE_TYPES
+        and root_message_type in {"s", "st", "gl", "gls"}
+    ):
+        state = _first_valid(payload, ("s", "state"), _strict_bool)
+        if state is not _INVALID:
+            updates["state"] = state
+
+    online = _first_valid(
+        payload,
+        ("onlineStatus", "online", "connected", "available", "sts"),
+        _strict_bool,
+    )
+    if online is not _INVALID:
+        updates["online"] = online
+
+    rssi = _first_valid(
+        payload, ("rssi",), lambda value: _bounded_number(value, -200, 0)
+    )
+    if rssi is not _INVALID:
+        updates["rssi"] = rssi
+
+    firmware = _first_valid(
+        payload,
+        ("firmware_version", "firmwareVersion", "av", "version"),
+        _firmware,
+    )
+    if firmware is not _INVALID:
+        updates["firmware_version"] = firmware
+
+    return updates or None
+
+
+
+class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Fetch hub data and accept sanitized, already-parsed MQTT state."""
+
+    def __init__(
+        self,
+        hass,
+        api: GritHubApiClient,
+        scan_interval: int,
+        expected_mqtt_hub_id: Any | None = None,
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=timedelta(seconds=scan_interval),
+        )
+        self.api = api
+        self._mqtt_connected = False
+        self._mqtt_connection_generation = 0
+        self._mqtt_receive_sequence = 0
+        self._refresh_sequence = 0
+        self._hub_update_sequence = 0
+        self._gritlock_update_sequence = 0
+        self._gritlock_state_observation: (
+            _GritlockStateObservation | None
+        ) = None
+        self._gritlock_live_burst: _GritlockBurst | None = None
+        self._gritlock_settle_task: asyncio.Task[None] | None = None
+        self._reconciliation_task: asyncio.Task[None] | None = None
+        self._reconcile_again = False
+        self._reconciliation_enabled = True
+        self._startup_hydration: _StartupHydration | None = None
+        self._gritlock_startup_snapshot: (
+            _GritlockStartupSnapshot | None
+        ) = None
+        self._gritlock_startup_task: asyncio.Task[None] | None = None
+        self._telemetry_request_tasks: dict[
+            tuple[str, str], asyncio.Task[None]
+        ] = {}
+        self._telemetry_request_waiters: dict[tuple[str, str], int] = {}
+        self._rfid_state_request_sequence = 0
+        self._collector_state_request_sequence = 0
+        # The proven RFID pool is shared with collector detail reads so the
+        # integration retains one bounded individual-device concurrency budget.
+        self._rfid_read_semaphore = asyncio.Semaphore(_RFID_STATE_CONCURRENCY)
+        self._rfid_read_tasks: set[asyncio.Task[dict[str, Any]]] = set()
+        self._rfid_event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._rfid_event_in_flight: set[str] = set()
+        self._rfid_event_trailing: set[str] = set()
+        self._mqtt_state_waiters: set[asyncio.Future[None]] = set()
+        self._expected_mqtt_hub_id = (
+            None
+            if expected_mqtt_hub_id is None
+            else _normalize_identifier(expected_mqtt_hub_id)
+        )
+        if (
+            expected_mqtt_hub_id is not None
+            and self._expected_mqtt_hub_id is None
+        ):
+            raise ValueError("expected MQTT hub identifier is invalid")
+
+    @property
+    def mqtt_connected(self) -> bool:
+        """Return whether MQTT is connected and subscribed."""
+        return self._mqtt_connected
+
+    @property
+    def mqtt_connection_generation(self) -> int:
+        """Return the current ready MQTT connection generation."""
+        return self._mqtt_connection_generation
+
+    @property
+    def hub_data(self) -> dict[str, Any]:
+        """Return only the API client's sanitized hub allowlist."""
+        if not isinstance(self.data, dict):
+            return {}
+        hub = self.data.get("hub")
+        return hub if isinstance(hub, dict) else {}
+
+    @property
+    def hub_id(self) -> str | None:
+        """Return the stable documented hub identifier when available."""
+        value = self.hub_data.get("id")
+        if isinstance(value, str):
+            return value
+        return self._expected_mqtt_hub_id
+
+    @property
+    def gritlock_state(self) -> bool | None:
+        """Return state from the one latest authoritative observation."""
+        observation = self._gritlock_state_observation
+        return observation.state if observation is not None else None
+
+    @property
+    def gritlock_participating_trigger_ids(self) -> frozenset[str]:
+        """Return participants from the latest authoritative observation."""
+        observation = self._gritlock_state_observation
+        return (
+            observation.participants
+            if observation is not None
+            else frozenset()
+        )
+
+    @property
+    def refresh_sequence(self) -> int:
+        """Return the most recently started REST refresh generation."""
+        return self._refresh_sequence
+
+    @property
+    def mqtt_receive_sequence(self) -> int:
+        """Return the latest accepted local MQTT observation sequence."""
+        return self._mqtt_receive_sequence
+
+    @property
+    def hub_update_sequence(self) -> int:
+        """Return the last generation with a valid current-hub response."""
+        return self._hub_update_sequence
+
+    @property
+    def gritlock_update_sequence(self) -> int:
+        """Return the last generation with a successful trigger read."""
+        return self._gritlock_update_sequence
+
+    def _rfid_state_observation(
+        self,
+        device_id: Any,
+        devices: Any | None = None,
+    ) -> tuple[bool | None, int]:
+        """Return one exact RFID REST state and its bounded request generation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None, 0
+        if devices is None:
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return None, 0
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return None, 0
+        matches = [
+            device
+            for device in collection
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1:
+            return None, 0
+        enabled = matches[0].get(RFID_ENABLED_KEY)
+        generation = _local_receive_sequence(
+            matches[0].get(RFID_STATE_GENERATION_KEY)
+        )
+        if not isinstance(enabled, bool) or generation is _INVALID:
+            return None, 0
+        return enabled, generation
+
+    def rfid_enabled(self, device_id: Any) -> bool | None:
+        """Return current RFID enabled state from an individual REST read."""
+        enabled, _generation = self._rfid_state_observation(device_id)
+        return enabled
+
+    def rfid_state_generation(self, device_id: Any) -> int:
+        """Return the last valid individual RFID request generation."""
+        _enabled, generation = self._rfid_state_observation(device_id)
+        return generation
+
+    @staticmethod
+    def _preserve_rfid_rest_state(
+        previous_devices: Any,
+        refreshed_devices: Any,
+    ) -> None:
+        """Preserve only newer, exact, uniquely matched RFID REST state."""
+        if not isinstance(previous_devices, dict) or not isinstance(
+            refreshed_devices, dict
+        ):
+            return
+        previous = previous_devices.get("rfid")
+        refreshed = refreshed_devices.get("rfid")
+        if not isinstance(previous, list) or not isinstance(refreshed, list):
+            return
+
+        previous_ids = [_telemetry_identifier(device) for device in previous]
+        refreshed_ids = [_telemetry_identifier(device) for device in refreshed]
+        previous_counts = Counter(
+            identifier for identifier in previous_ids if identifier is not None
+        )
+        refreshed_counts = Counter(
+            identifier for identifier in refreshed_ids if identifier is not None
+        )
+        previous_by_id = {
+            identifier: device
+            for identifier, device in zip(previous_ids, previous)
+            if identifier is not None
+            and previous_counts[identifier] == 1
+            and isinstance(device, dict)
+        }
+
+        for identifier, device in zip(refreshed_ids, refreshed):
+            if (
+                identifier is None
+                or refreshed_counts[identifier] != 1
+                or not isinstance(device, dict)
+            ):
+                continue
+            prior = previous_by_id.get(identifier)
+            if prior is None:
+                continue
+            enabled = prior.get(RFID_ENABLED_KEY)
+            prior_generation = _local_receive_sequence(
+                prior.get(RFID_STATE_GENERATION_KEY)
+            )
+            current_generation = _local_receive_sequence(
+                device.get(RFID_STATE_GENERATION_KEY)
+            )
+            if (
+                not isinstance(enabled, bool)
+                or prior_generation is _INVALID
+                or (
+                    current_generation is not _INVALID
+                    and current_generation >= prior_generation
+                )
+            ):
+                continue
+            device[RFID_ENABLED_KEY] = enabled
+            device[RFID_STATE_GENERATION_KEY] = prior_generation
+
+    @staticmethod
+    def _apply_rfid_detail(
+        devices: Any,
+        requested_id: str,
+        detail: Any,
+        request_generation: int,
+    ) -> bool:
+        """Merge one strict detail response into one exact unique RFID record."""
+        if not isinstance(devices, dict) or not isinstance(detail, dict):
+            return False
+        detail_id = _normalize_identifier(detail.get("id"))
+        enabled = detail.get("state")
+        if detail_id != requested_id or not isinstance(enabled, bool):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+        matches = [
+            (index, device)
+            for index, device in enumerate(collection)
+            if _telemetry_identifier(device) == requested_id
+        ]
+        if len(matches) != 1:
+            return False
+        index, current = matches[0]
+        if not isinstance(current, dict):
+            return False
+        current_generation = _local_receive_sequence(
+            current.get(RFID_STATE_GENERATION_KEY)
+        )
+        if (
+            current_generation is not _INVALID
+            and current_generation >= request_generation
+        ):
+            return False
+
+        merged = dict(current)
+        merged.pop("state", None)
+        merged.pop("lockout", None)
+        for field in ("name", "displayName", "version", "onlineStatus"):
+            if field in detail:
+                merged[field] = detail[field]
+        merged[RFID_ENABLED_KEY] = enabled
+        merged[RFID_STATE_GENERATION_KEY] = request_generation
+        collection[index] = merged
+        return True
+
+    def _has_unique_rfid_target(self, device_id: str) -> bool:
+        """Return whether one exact top-level RFID identity is present."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+        return sum(
+            _telemetry_identifier(device) == device_id
+            for device in collection
+        ) == 1
+
+    def _apply_current_rfid_detail(
+        self,
+        device_id: str,
+        detail: Any,
+        generation: int,
+    ) -> bool:
+        """Apply one detail response to current coordinator data and notify."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+
+        next_data = dict(data)
+        next_devices = dict(devices)
+        next_devices["rfid"] = [
+            dict(device) for device in collection if isinstance(device, dict)
+        ]
+        next_data["devices"] = next_devices
+        if not self._apply_rfid_detail(
+            next_devices,
+            device_id,
+            detail,
+            generation,
+        ):
+            return False
+        self.async_set_updated_data(next_data)
+        return True
+
+    def _satisfy_rfid_event_refresh(self, device_id: str) -> None:
+        """Let a fresh periodic or command read satisfy pending event work."""
+        task = self._rfid_event_tasks.get(device_id)
+        if task is None or task.done():
+            return
+        self._rfid_event_trailing.discard(device_id)
+        if device_id not in self._rfid_event_in_flight:
+            task.cancel()
+
+    def _finish_rfid_event_refresh(
+        self,
+        device_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Release one completed event-task entry without exposing identity."""
+        if self._rfid_event_tasks.get(device_id) is task:
+            self._rfid_event_tasks.pop(device_id, None)
+            self._rfid_event_in_flight.discard(device_id)
+            self._rfid_event_trailing.discard(device_id)
+
+    def _schedule_rfid_event_refresh(self, device_id: str) -> bool:
+        """Schedule or coalesce one exact RFID invalidation refresh."""
+        if (
+            not self._reconciliation_enabled
+            or not self._mqtt_connected
+            or not self._has_unique_rfid_target(device_id)
+        ):
+            return False
+
+        task = self._rfid_event_tasks.get(device_id)
+        if (
+            task is not None
+            and not task.done()
+            and not task.cancelling()
+        ):
+            if device_id in self._rfid_event_in_flight:
+                self._rfid_event_trailing.add(device_id)
+            return True
+        if task is not None:
+            self._rfid_event_tasks.pop(device_id, None)
+            self._rfid_event_in_flight.discard(device_id)
+            self._rfid_event_trailing.discard(device_id)
+        if len(self._rfid_event_tasks) >= _MAX_RFID_EVENT_REFRESHES:
+            return False
+
+        task = asyncio.create_task(self._async_rfid_event_refresh(device_id))
+        self._rfid_event_tasks[device_id] = task
+        task.add_done_callback(
+            lambda completed, identifier=device_id: (
+                self._finish_rfid_event_refresh(identifier, completed)
+            )
+        )
+        return True
+
+    def _cancel_rfid_event_refreshes(self) -> None:
+        """Cancel pending event refreshes and clear coalescing flags."""
+        self._rfid_event_in_flight.clear()
+        self._rfid_event_trailing.clear()
+        for task in tuple(self._rfid_event_tasks.values()):
+            if not task.done():
+                task.cancel()
+
+    async def _async_rfid_event_refresh(self, device_id: str) -> None:
+        """Run one debounced read and at most one trailing read."""
+        current_task = asyncio.current_task()
+        try:
+            for attempt in range(2):
+                await asyncio.sleep(_RFID_EVENT_DEBOUNCE)
+                if (
+                    not self._reconciliation_enabled
+                    or not self._mqtt_connected
+                    or self._rfid_event_tasks.get(device_id) is not current_task
+                ):
+                    return
+
+                self._rfid_event_in_flight.add(device_id)
+                try:
+                    generation, detail = await self._async_read_rfid_detail(
+                        device_id
+                    )
+                    if (
+                        self._rfid_event_tasks.get(device_id) is current_task
+                        and self._reconciliation_enabled
+                        and self._mqtt_connected
+                    ):
+                        self._apply_current_rfid_detail(
+                            device_id, detail, generation
+                        )
+                except GritHubApiError:
+                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOGGER.warning("GRIT RFID event refresh failed")
+                finally:
+                    if self._rfid_event_tasks.get(device_id) is current_task:
+                        self._rfid_event_in_flight.discard(device_id)
+
+                if (
+                    attempt == 0
+                    and self._rfid_event_tasks.get(device_id) is current_task
+                    and device_id in self._rfid_event_trailing
+                    and self._reconciliation_enabled
+                    and self._mqtt_connected
+                ):
+                    self._rfid_event_trailing.discard(device_id)
+                    continue
+                break
+        finally:
+            if self._rfid_event_tasks.get(device_id) is current_task:
+                self._rfid_event_in_flight.discard(device_id)
+                self._rfid_event_trailing.discard(device_id)
+                self._rfid_event_tasks.pop(device_id, None)
+
+    async def _async_read_rfid_detail(
+        self,
+        device_id: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Run one tracked, globally concurrency-bounded RFID REST read."""
+        if not self._reconciliation_enabled:
+            raise GritHubApiError("RFID state reads are unavailable")
+        async with self._rfid_read_semaphore:
+            if not self._reconciliation_enabled:
+                raise GritHubApiError("RFID state reads are unavailable")
+            if len(self._rfid_read_tasks) >= _MAX_RFID_READ_TASKS:
+                raise GritHubApiError("RFID state request limit reached")
+            if self._rfid_state_request_sequence >= _MAX_SOURCE_SEQUENCE:
+                raise GritHubApiError("RFID state generation limit reached")
+            self._rfid_state_request_sequence += 1
+            request_generation = self._rfid_state_request_sequence
+            task = asyncio.create_task(self.api.get_rfid_device(device_id))
+            self._rfid_read_tasks.add(task)
+            try:
+                detail = await task
+            finally:
+                self._rfid_read_tasks.discard(task)
+            return request_generation, detail
+    async def _async_refresh_rfid_states(self, devices: Any) -> bool:
+        """Refresh at most 64 exact RFID records with concurrency four."""
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+
+        identifiers = [_telemetry_identifier(device) for device in collection]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        incomplete = any(identifier is None for identifier in identifiers) or any(
+            count != 1 for count in counts.values()
+        )
+        targets: list[str] = []
+        for identifier in identifiers:
+            if (
+                identifier is not None
+                and counts[identifier] == 1
+                and identifier not in targets
+            ):
+                targets.append(identifier)
+        truncated = len(targets) > _MAX_RFID_STATE_TARGETS
+        targets = targets[:_MAX_RFID_STATE_TARGETS]
+        if not targets:
+            return not incomplete and not truncated
+        async def read_one(device_id: str) -> bool:
+            try:
+                generation, detail = await self._async_read_rfid_detail(
+                    device_id
+                )
+            except Exception:
+                return False
+            applied = self._apply_rfid_detail(
+                devices,
+                device_id,
+                detail,
+                generation,
+            )
+            if applied:
+                self._satisfy_rfid_event_refresh(device_id)
+            return applied
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(read_one(device_id) for device_id in targets)),
+                timeout=_RFID_STATE_REFRESH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return not incomplete and not truncated and all(results)
+
+    async def async_confirm_rfid_state(
+        self,
+        device_id: Any,
+        expected_enabled: bool,
+        *,
+        after_generation: int,
+        timeout: float,
+    ) -> bool:
+        """Require a fresh individual REST read matching a requested state."""
+        normalized_id = _normalize_identifier(device_id)
+        if (
+            normalized_id is None
+            or not isinstance(expected_enabled, bool)
+            or _local_receive_sequence(after_generation) is _INVALID
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+        ):
+            return False
+
+        async def read_and_confirm() -> bool:
+            generation, detail = await self._async_read_rfid_detail(normalized_id)
+            detail_id = (
+                _normalize_identifier(detail.get("id"))
+                if isinstance(detail, dict)
+                else None
+            )
+            detail_enabled = (
+                detail.get("state") if isinstance(detail, dict) else None
+            )
+
+            if self._apply_current_rfid_detail(
+                normalized_id,
+                detail,
+                generation,
+            ):
+                self._satisfy_rfid_event_refresh(normalized_id)
+
+            enabled, current_generation = self._rfid_state_observation(
+                normalized_id
+            )
+            return (
+                detail_id == normalized_id
+                and isinstance(detail_enabled, bool)
+                and detail_enabled is expected_enabled
+                and generation > after_generation
+                and current_generation >= generation
+                and enabled is expected_enabled
+            )
+
+        try:
+            return await asyncio.wait_for(read_and_confirm(), timeout=timeout)
+        except (asyncio.TimeoutError, GritHubApiError):
+            return False
+
+    @staticmethod
+    def _collector_detail_online(detail: dict[str, Any]) -> Any:
+        """Return one unambiguous strict collector availability value."""
+        values = [
+            detail[field]
+            for field in ("isOnline", "onlineStatus")
+            if isinstance(detail.get(field), bool)
+        ]
+        if not values or any(value is not values[0] for value in values[1:]):
+            return _INVALID
+        return values[0]
+
+    def _collector_state_observation(
+        self,
+        device_id: Any,
+        devices: Any | None = None,
+    ) -> tuple[bool | None, bool | None, bool | None, bool | None, int]:
+        """Return one exact collector detail observation and its generation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None, None, None, None, 0
+        if devices is None:
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return None, None, None, None, 0
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return None, None, None, None, 0
+        matches = [
+            device
+            for device in collection
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], dict):
+            return None, None, None, None, 0
+        record = matches[0]
+        generation = _local_receive_sequence(
+            record.get(COLLECTOR_STATE_GENERATION_KEY)
+        )
+        if generation is _INVALID:
+            return None, None, None, None, 0
+        state = record.get(COLLECTOR_STATE_KEY)
+        changing = record.get(COLLECTOR_STATE_CHANGING_KEY)
+        changing_to = record.get(COLLECTOR_STATE_CHANGING_TO_KEY)
+        online = record.get(COLLECTOR_ONLINE_KEY)
+        return (
+            state if isinstance(state, bool) else None,
+            changing if isinstance(changing, bool) else None,
+            changing_to if isinstance(changing_to, bool) else None,
+            online if isinstance(online, bool) else None,
+            generation,
+        )
+
+    def collector_state(self, device_id: Any) -> bool | None:
+        """Return current authoritative collector state from individual REST."""
+        state, _changing, _changing_to, _online, _generation = (
+            self._collector_state_observation(device_id)
+        )
+        return state
+
+    def collector_display_state(self, device_id: Any) -> bool | None:
+        """Return individual REST state plus only newer MQTT supplementation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None
+        state = self.collector_state(normalized_id)
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        collection = devices.get("collector") if isinstance(devices, dict) else None
+        matches = [
+            device
+            for device in collection or []
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], dict):
+            return None
+        boundary = _local_receive_sequence(
+            matches[0].get(COLLECTOR_MQTT_BOUNDARY_KEY)
+        )
+        if boundary is _INVALID:
+            boundary = 0
+        mqtt_state = self._mqtt_field_observation(
+            "collector",
+            normalized_id,
+            "state",
+            boundary,
+        )
+        if isinstance(mqtt_state, bool):
+            return mqtt_state
+        if state is not None:
+            return state
+        persisted = _sanitize_mqtt_state(matches[0].get(MQTT_STATE_KEY))
+        fallback = persisted.get("state") if persisted else None
+        return fallback if isinstance(fallback, bool) else None
+    def collector_online(self, device_id: Any) -> bool | None:
+        """Return current strict collector availability from individual REST."""
+        _state, _changing, _changing_to, online, _generation = (
+            self._collector_state_observation(device_id)
+        )
+        return online
+
+    def collector_state_generation(self, device_id: Any) -> int:
+        """Return the last individual collector request generation."""
+        _state, _changing, _changing_to, _online, generation = (
+            self._collector_state_observation(device_id)
+        )
+        return generation
+
+    @staticmethod
+    def _preserve_collector_rest_state(
+        previous_devices: Any,
+        refreshed_devices: Any,
+    ) -> None:
+        """Preserve newer exact collector detail state across inventory reads."""
+        if not isinstance(previous_devices, dict) or not isinstance(
+            refreshed_devices, dict
+        ):
+            return
+        previous = previous_devices.get("collector")
+        refreshed = refreshed_devices.get("collector")
+        if not isinstance(previous, list) or not isinstance(refreshed, list):
+            return
+
+        previous_ids = [_telemetry_identifier(device) for device in previous]
+        refreshed_ids = [_telemetry_identifier(device) for device in refreshed]
+        previous_counts = Counter(
+            identifier for identifier in previous_ids if identifier is not None
+        )
+        refreshed_counts = Counter(
+            identifier for identifier in refreshed_ids if identifier is not None
+        )
+        previous_by_id = {
+            identifier: device
+            for identifier, device in zip(previous_ids, previous)
+            if identifier is not None
+            and previous_counts[identifier] == 1
+            and isinstance(device, dict)
+        }
+
+        for identifier, device in zip(refreshed_ids, refreshed):
+            if not isinstance(device, dict):
+                continue
+            # Collection state is inventory-only; individual detail is the
+            # proven authority for collector state and transition fields.
+            for field in (
+                "state",
+                "stateChanging",
+                "stateChangingTo",
+                "onlineStatus",
+                "isOnline",
+            ):
+                device.pop(field, None)
+            if identifier is None or refreshed_counts[identifier] != 1:
+                continue
+            prior = previous_by_id.get(identifier)
+            if prior is None:
+                continue
+            prior_generation = _local_receive_sequence(
+                prior.get(COLLECTOR_STATE_GENERATION_KEY)
+            )
+            current_generation = _local_receive_sequence(
+                device.get(COLLECTOR_STATE_GENERATION_KEY)
+            )
+            if (
+                prior_generation is _INVALID
+                or (
+                    current_generation is not _INVALID
+                    and current_generation >= prior_generation
+                )
+            ):
+                continue
+            for field in (
+                COLLECTOR_STATE_KEY,
+                COLLECTOR_STATE_CHANGING_KEY,
+                COLLECTOR_STATE_CHANGING_TO_KEY,
+                COLLECTOR_ONLINE_KEY,
+                COLLECTOR_STATE_GENERATION_KEY,
+                COLLECTOR_MQTT_BOUNDARY_KEY,
+            ):
+                if field in prior:
+                    device[field] = prior[field]
+
+    @classmethod
+    def _apply_collector_detail(
+        cls,
+        devices: Any,
+        requested_id: str,
+        detail: Any,
+        request_generation: int,
+        mqtt_boundary: int,
+    ) -> bool:
+        """Merge one strict detail response into one exact collector record."""
+        if (
+            not isinstance(devices, dict)
+            or not isinstance(detail, dict)
+            or _local_receive_sequence(mqtt_boundary) is _INVALID
+        ):
+            return False
+        detail_id = _normalize_identifier(detail.get("id"))
+        state = detail.get("state")
+        changing = detail.get("stateChanging")
+        changing_to = detail.get("stateChangingTo")
+        online = cls._collector_detail_online(detail)
+        if (
+            detail_id != requested_id
+            or not isinstance(state, bool)
+            or not isinstance(changing, bool)
+            or not isinstance(changing_to, bool)
+            or not isinstance(online, bool)
+        ):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+        matches = [
+            (index, device)
+            for index, device in enumerate(collection)
+            if _telemetry_identifier(device) == requested_id
+        ]
+        if len(matches) != 1:
+            return False
+        index, current = matches[0]
+        if not isinstance(current, dict):
+            return False
+        current_generation = _local_receive_sequence(
+            current.get(COLLECTOR_STATE_GENERATION_KEY)
+        )
+        if (
+            current_generation is not _INVALID
+            and current_generation >= request_generation
+        ):
+            return False
+
+        merged = dict(current)
+        for field in (
+            "state",
+            "stateChanging",
+            "stateChangingTo",
+            "onlineStatus",
+            "isOnline",
+        ):
+            merged.pop(field, None)
+        for field in ("name", "displayName", "version"):
+            if field in detail:
+                merged[field] = detail[field]
+        if online:
+            merged[COLLECTOR_STATE_KEY] = state
+        merged[COLLECTOR_STATE_CHANGING_KEY] = changing
+        merged[COLLECTOR_STATE_CHANGING_TO_KEY] = changing_to
+        merged[COLLECTOR_ONLINE_KEY] = online
+        merged[COLLECTOR_STATE_GENERATION_KEY] = request_generation
+        merged[COLLECTOR_MQTT_BOUNDARY_KEY] = mqtt_boundary
+        collection[index] = merged
+        return True
+
+    def _apply_current_collector_detail(
+        self,
+        device_id: str,
+        detail: Any,
+        generation: int,
+    ) -> bool:
+        """Apply one collector detail response to current data and notify."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+
+        next_data = dict(data)
+        next_devices = dict(devices)
+        next_devices["collector"] = [
+            dict(device) for device in collection if isinstance(device, dict)
+        ]
+        next_data["devices"] = next_devices
+        if not self._apply_collector_detail(
+            next_devices,
+            device_id,
+            detail,
+            generation,
+            self._mqtt_receive_sequence,
+        ):
+            return False
+        self.async_set_updated_data(next_data)
+        return True
+
+    async def _async_read_collector_detail(
+        self,
+        device_id: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Run one tracked collector read in the shared bounded REST pool."""
+        if not self._reconciliation_enabled:
+            raise GritHubApiError("Collector state reads are unavailable")
+        async with self._rfid_read_semaphore:
+            if not self._reconciliation_enabled:
+                raise GritHubApiError("Collector state reads are unavailable")
+            if len(self._rfid_read_tasks) >= _MAX_RFID_READ_TASKS:
+                raise GritHubApiError("Individual state request limit reached")
+            if self._collector_state_request_sequence >= _MAX_SOURCE_SEQUENCE:
+                raise GritHubApiError("Collector state generation limit reached")
+            self._collector_state_request_sequence += 1
+            request_generation = self._collector_state_request_sequence
+            task = asyncio.create_task(self.api.get_collector_device(device_id))
+            self._rfid_read_tasks.add(task)
+            try:
+                detail = await task
+            finally:
+                self._rfid_read_tasks.discard(task)
+            return request_generation, detail
+
+    async def _async_refresh_collector_states(self, devices: Any) -> bool:
+        """Refresh at most 64 collectors using the shared concurrency bound."""
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+
+        identifiers = [_telemetry_identifier(device) for device in collection]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        incomplete = any(identifier is None for identifier in identifiers) or any(
+            count != 1 for count in counts.values()
+        )
+        targets = list(dict.fromkeys(
+            identifier
+            for identifier in identifiers
+            if identifier is not None and counts[identifier] == 1
+        ))
+        truncated = len(targets) > _MAX_COLLECTOR_STATE_TARGETS
+        targets = targets[:_MAX_COLLECTOR_STATE_TARGETS]
+        if not targets:
+            return not incomplete and not truncated
+
+        async def read_one(device_id: str) -> bool:
+            try:
+                generation, detail = await self._async_read_collector_detail(
+                    device_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+            return self._apply_collector_detail(
+                devices,
+                device_id,
+                detail,
+                generation,
+                self._mqtt_receive_sequence,
+            )
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(read_one(device_id) for device_id in targets)),
+                timeout=_COLLECTOR_STATE_REFRESH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return not incomplete and not truncated and all(results)
+
+    def _collector_confirmation_outcome(
+        self,
+        device_id: str,
+        expected: bool,
+        after_generation: int,
+    ) -> bool | None:
+        """Classify one newer collector observation, or request another read."""
+        state, changing, changing_to, online, generation = (
+            self._collector_state_observation(device_id)
+        )
+        if generation <= after_generation:
+            return None
+        if online is not True:
+            return False
+        if changing is True:
+            return None if changing_to is expected else False
+        if changing is not False:
+            return False
+        return state is expected
+
+    async def async_confirm_collector_state(
+        self,
+        device_id: Any,
+        expected: bool,
+        *,
+        after_generation: int,
+        timeout: float,
+    ) -> bool:
+        """Confirm a collector from newer settled individual REST detail."""
+        normalized_id = _normalize_identifier(device_id)
+        if (
+            normalized_id is None
+            or not isinstance(expected, bool)
+            or _local_receive_sequence(after_generation) is _INVALID
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+        ):
+            return False
+
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + float(timeout)
+            for attempt in range(_MAX_COLLECTOR_CONFIRM_ATTEMPTS):
+                outcome = self._collector_confirmation_outcome(
+                    normalized_id,
+                    expected,
+                    after_generation,
+                )
+                if outcome is not None:
+                    return outcome
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                generation, detail = await asyncio.wait_for(
+                    self._async_read_collector_detail(normalized_id),
+                    timeout=remaining,
+                )
+                applied = self._apply_current_collector_detail(
+                    normalized_id,
+                    detail,
+                    generation,
+                )
+                outcome = self._collector_confirmation_outcome(
+                    normalized_id,
+                    expected,
+                    after_generation,
+                )
+                if outcome is not None:
+                    return outcome
+                if not applied or attempt + 1 >= _MAX_COLLECTOR_CONFIRM_ATTEMPTS:
+                    return False
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(_COLLECTOR_CONFIRM_INTERVAL, remaining))
+            return False
+        except asyncio.CancelledError:
+            raise
+        except (asyncio.TimeoutError, GritHubApiError):
+            return False
+        except Exception:
+            _LOGGER.warning("GRIT collector state confirmation failed")
+            return False
+
+    def _rest_gritlock_participants(
+        self,
+        devices: Any | None = None,
+    ) -> tuple[frozenset[str], bool]:
+        """Return bounded participants and whether REST metadata is usable."""
+        if devices is None:
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return frozenset(), False
+        triggers = devices.get("trigger")
+        if not isinstance(triggers, list):
+            return frozenset(), False
+
+        identifiers: list[str] = []
+        complete = True
+        metadata_seen = False
+        for trigger in triggers:
+            if not isinstance(trigger, dict):
+                complete = False
+                continue
+            enabled = trigger.get("gritLockEnabled", _INVALID)
+            if not isinstance(enabled, bool):
+                complete = False
+                continue
+            metadata_seen = True
+            if not enabled:
+                continue
+            identifier = _telemetry_identifier(trigger)
+            if identifier is None:
+                complete = False
+                continue
+            identifiers.append(identifier)
+            if len(identifiers) > _MAX_GRITLOCK_OBSERVATIONS:
+                complete = False
+                break
+
+        counts = Counter(identifiers)
+        unique: list[str] = []
+        for identifier in identifiers:
+            if counts[identifier] != 1:
+                complete = False
+                continue
+            if identifier not in unique:
+                unique.append(identifier)
+        if len(unique) > _MAX_GRITLOCK_OBSERVATIONS:
+            complete = False
+            unique = unique[:_MAX_GRITLOCK_OBSERVATIONS]
+        # An empty REST set cannot identify startup participants. Treat it as
+        # unavailable so current-connection status reporters can provide the
+        # bounded startup fallback instead of remaining Unknown.
+        return frozenset(unique), bool(unique) and metadata_seen and complete
+
+    def _cancel_gritlock_settle_task(self) -> None:
+        """Cancel the one bounded live-burst settlement task."""
+        task = self._gritlock_settle_task
+        self._gritlock_settle_task = None
+        if task is None or task.done():
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if task is not current:
+            task.cancel()
+
+    def _reset_gritlock_mqtt_state(self) -> None:
+        """Discard continuous MQTT evidence and authoritative state."""
+        self._cancel_gritlock_settle_task()
+        self._gritlock_live_burst = None
+        self._gritlock_state_observation = None
+
+    def _publish_gritlock_state_observation(
+        self,
+        state: bool | None,
+        *,
+        connection_generation: int,
+        first_receive_sequence: int,
+        last_receive_sequence: int,
+        source: str,
+        participants: frozenset[str],
+    ) -> bool:
+        """Publish one bounded immutable observation and notify once."""
+        if (
+            connection_generation != self._mqtt_connection_generation
+            or not self._mqtt_connected
+            or _local_receive_sequence(first_receive_sequence) is _INVALID
+            or _local_receive_sequence(last_receive_sequence) is _INVALID
+            or first_receive_sequence <= 0
+            or first_receive_sequence > last_receive_sequence
+            or last_receive_sequence > self._mqtt_receive_sequence
+            or not participants
+            or len(participants) > _MAX_GRITLOCK_OBSERVATIONS
+            or source
+            not in {
+                _GRITLOCK_SOURCE_STARTUP,
+                _GRITLOCK_SOURCE_LIVE,
+                _GRITLOCK_SOURCE_DISAGREEMENT,
+            }
+            or (
+                source == _GRITLOCK_SOURCE_DISAGREEMENT
+                and state is not None
+            )
+            or (
+                source != _GRITLOCK_SOURCE_DISAGREEMENT
+                and not isinstance(state, bool)
+            )
+        ):
+            return False
+
+        self._gritlock_state_observation = _GritlockStateObservation(
+            state=state,
+            connection_generation=connection_generation,
+            first_receive_sequence=first_receive_sequence,
+            last_receive_sequence=last_receive_sequence,
+            source=source,
+            participants=participants,
+        )
+        self.async_update_listeners()
+        self._wake_mqtt_state_waiters()
+        return True
+
+    @staticmethod
+    def _evaluate_gritlock_burst(
+        burst: _GritlockBurst,
+    ) -> tuple[bool | None, frozenset[str], bool]:
+        """Return state, participants, and explicit disagreement."""
+        if burst.overflowed or not burst.observations:
+            return None, frozenset(), False
+        explicit_participants = frozenset(
+            trigger_id
+            for trigger_id, observation in burst.observations.items()
+            if observation.explicitly_participating
+        )
+        participants = explicit_participants or frozenset(burst.observations)
+        states = {
+            burst.observations[trigger_id].locked
+            for trigger_id in participants
+        }
+        if len(states) == 1:
+            return next(iter(states)), participants, False
+        return None, participants, True
+
+    def _settle_gritlock_burst(
+        self,
+        burst: _GritlockBurst,
+        *,
+        force: bool = False,
+        now: float | None = None,
+    ) -> bool:
+        """Settle one continuous live burst without retaining a result map."""
+        if (
+            self._gritlock_live_burst is not burst
+            or burst.connection_generation
+            != self._mqtt_connection_generation
+            or not self._mqtt_connected
+        ):
+            return False
+        current_time = time.monotonic() if now is None else now
+        last_received = burst.last_received_monotonic
+        if (
+            not force
+            and (
+                last_received is None
+                or current_time - last_received < _GRITLOCK_SETTLE_TIME
+            )
+        ):
+            return False
+
+        state, participants, disagreement = self._evaluate_gritlock_burst(
+            burst
+        )
+        self._gritlock_live_burst = None
+        self._cancel_gritlock_settle_task()
+        if not participants:
+            return False
+        sequences = [
+            burst.observations[trigger_id].receive_sequence
+            for trigger_id in participants
+        ]
+        return self._publish_gritlock_state_observation(
+            state if isinstance(state, bool) else None,
+            connection_generation=burst.connection_generation,
+            first_receive_sequence=min(sequences),
+            last_receive_sequence=max(sequences),
+            source=(
+                _GRITLOCK_SOURCE_DISAGREEMENT
+                if disagreement
+                else _GRITLOCK_SOURCE_LIVE
+            ),
+            participants=participants,
+        )
+
+    async def _async_settle_gritlock_burst(
+        self,
+        burst: _GritlockBurst,
+    ) -> None:
+        """Naturally settle the active continuous live burst after quiet."""
+        try:
+            while self._gritlock_live_burst is burst:
+                if (
+                    burst.connection_generation
+                    != self._mqtt_connection_generation
+                    or not self._mqtt_connected
+                    or burst.last_received_monotonic is None
+                ):
+                    return
+                remaining = _GRITLOCK_SETTLE_TIME - (
+                    time.monotonic() - burst.last_received_monotonic
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                    continue
+                self._settle_gritlock_burst(burst)
+                return
+        finally:
+            if self._gritlock_settle_task is asyncio.current_task():
+                self._gritlock_settle_task = None
+
+    def _ensure_gritlock_settle_task(
+        self,
+        burst: _GritlockBurst,
+    ) -> None:
+        """Ensure at most one continuous live-burst task is active."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = self._gritlock_settle_task
+        if task is not None and not task.done():
+            if self._gritlock_live_burst is burst:
+                return
+            task.cancel()
+        self._gritlock_settle_task = asyncio.create_task(
+            self._async_settle_gritlock_burst(burst)
+        )
+
+    def _clear_startup_hydration(
+        self,
+        session: _StartupHydration | None = None,
+    ) -> None:
+        """Invalidate one gate startup pass and release bounded waiters."""
+        current = self._startup_hydration
+        if current is None or (session is not None and current is not session):
+            return
+        self._startup_hydration = None
+        for event in current.response_events.values():
+            event.set()
+
+    def _record_startup_hydration(
+        self,
+        device_type: str,
+        device_id: str,
+        root_message_type: str,
+        payload: dict[str, Any],
+        updates: dict[str, Any] | None,
+        receive_sequence: int,
+    ) -> tuple[bool, bool]:
+        """Accept one gate response causally bounded by its REST request."""
+        session = self._startup_hydration
+        target = (device_type, device_id)
+        if (
+            session is None
+            or session.connection_generation
+            != self._mqtt_connection_generation
+            or receive_sequence <= session.after_sequence
+            or target not in session.requested_targets
+            or device_type != "gate"
+            or root_message_type not in _GATE_STARTUP_RESPONSE_TYPES
+            or not isinstance(updates, dict)
+            or not isinstance(updates.get("open"), bool)
+        ):
+            return False, False
+
+        session.observed_targets.add(target)
+        event = session.response_events.get(target)
+        if event is not None:
+            event.set()
+        return True, False
+
+    async def _async_wait_startup_response(
+        self,
+        session: _StartupHydration,
+        target: tuple[str, str],
+    ) -> bool:
+        """Wait for one exact gate response without retaining raw payload."""
+        if target in session.observed_targets:
+            return True
+        event = session.response_events.get(target)
+        if event is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                event.wait(),
+                timeout=_RECONCILIATION_RESPONSE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return (
+            self._startup_hydration is session
+            and self._reconciliation_enabled
+            and self._mqtt_connected
+            and self._mqtt_connection_generation
+            == session.connection_generation
+            and target in session.observed_targets
+        )
+
+    def _gritlock_startup_participants(
+        self,
+    ) -> tuple[
+        frozenset[str],
+        bool,
+        frozenset[str],
+        bool,
+    ]:
+        """Return REST participants and bounded fallback candidates."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        rest_participants, rest_usable = self._rest_gritlock_participants(
+            devices
+        )
+        triggers = (
+            devices.get("trigger") if isinstance(devices, dict) else None
+        )
+        if not isinstance(triggers, list):
+            return rest_participants, rest_usable, frozenset(), False
+
+        identifiers = [_telemetry_identifier(trigger) for trigger in triggers]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        candidates = [
+            identifier
+            for identifier in identifiers
+            if identifier is not None and counts[identifier] == 1
+        ]
+        fallback_usable = (
+            bool(candidates)
+            and len(candidates) <= _MAX_GRITLOCK_OBSERVATIONS
+        )
+        return (
+            rest_participants,
+            rest_usable,
+            frozenset(candidates) if fallback_usable else frozenset(),
+            fallback_usable,
+        )
+
+    def _begin_gritlock_startup_snapshot(self) -> None:
+        """Open one bounded collection window after MQTT readiness."""
+        self._clear_gritlock_startup_snapshot()
+        if not self._reconciliation_enabled or not self._mqtt_connected:
+            return
+        (
+            rest_participants,
+            rest_usable,
+            fallback_candidates,
+            fallback_usable,
+        ) = self._gritlock_startup_participants()
+        snapshot = _GritlockStartupSnapshot(
+            connection_generation=self._mqtt_connection_generation,
+            after_sequence=self._mqtt_receive_sequence,
+            rest_participants=rest_participants,
+            rest_participants_usable=rest_usable,
+            fallback_candidates=fallback_candidates,
+            fallback_usable=fallback_usable,
+            observations={},
+            updated=asyncio.Event(),
+            deadline_monotonic=(
+                time.monotonic() + _GRITLOCK_STARTUP_WINDOW
+            ),
+        )
+        self._gritlock_startup_snapshot = snapshot
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._gritlock_startup_task = asyncio.create_task(
+            self._async_collect_gritlock_startup(snapshot)
+        )
+
+    def _clear_gritlock_startup_snapshot(
+        self,
+        snapshot: _GritlockStartupSnapshot | None = None,
+    ) -> None:
+        """Invalidate current-connection status evidence and its task."""
+        current = self._gritlock_startup_snapshot
+        if current is None or (
+            snapshot is not None and current is not snapshot
+        ):
+            return
+        self._gritlock_startup_snapshot = None
+        current.updated.set()
+        task = self._gritlock_startup_task
+        self._gritlock_startup_task = None
+        if task is None or task.done():
+            return
+        try:
+            active_task = asyncio.current_task()
+        except RuntimeError:
+            active_task = None
+        if task is not active_task:
+            task.cancel()
+
+    def _settle_gritlock_startup_snapshot(
+        self,
+        snapshot: _GritlockStartupSnapshot,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Publish one complete exact startup consensus at a safe boundary."""
+        if (
+            self._gritlock_startup_snapshot is not snapshot
+            or snapshot.connection_generation
+            != self._mqtt_connection_generation
+            or not self._mqtt_connected
+            or snapshot.overflowed
+        ):
+            return False
+
+        current_time = time.monotonic() if now is None else now
+        if (
+            not snapshot.observations
+            or snapshot.last_received_monotonic is None
+            or current_time - snapshot.last_received_monotonic
+            < _GRITLOCK_STARTUP_QUIET_TIME
+        ):
+            return False
+
+        if snapshot.rest_participants_usable and (
+            snapshot.rest_participants.issubset(snapshot.observations)
+        ):
+            participants = snapshot.rest_participants
+        elif snapshot.fallback_usable:
+            participants = frozenset(snapshot.observations)
+        else:
+            return False
+
+        states = {
+            snapshot.observations[trigger_id][0]
+            for trigger_id in participants
+        }
+        sequences = [
+            snapshot.observations[trigger_id][1]
+            for trigger_id in participants
+        ]
+        state = next(iter(states)) if len(states) == 1 else None
+        self._gritlock_startup_snapshot = None
+        snapshot.updated.set()
+        return self._publish_gritlock_state_observation(
+            state,
+            connection_generation=snapshot.connection_generation,
+            first_receive_sequence=min(sequences),
+            last_receive_sequence=max(sequences),
+            source=(
+                _GRITLOCK_SOURCE_STARTUP
+                if isinstance(state, bool)
+                else _GRITLOCK_SOURCE_DISAGREEMENT
+            ),
+            participants=participants,
+        )
+
+    def _record_gritlock_startup_observation(
+        self,
+        device_id: str,
+        root_message_type: str,
+        payload: dict[str, Any],
+        receive_sequence: int,
+    ) -> bool:
+        """Retain one strict scalar status for the active connection only."""
+        snapshot = self._gritlock_startup_snapshot
+        if (
+            snapshot is None
+            or snapshot.connection_generation
+            != self._mqtt_connection_generation
+            or receive_sequence <= snapshot.after_sequence
+            or root_message_type not in _GRITLOCK_STARTUP_RESPONSE_TYPES
+        ):
+            return False
+
+        locked = _strict_binary_bool(payload.get("gls", _INVALID))
+        if locked is _INVALID:
+            return False
+        if device_id not in snapshot.rest_participants and (
+            not snapshot.fallback_usable
+            or device_id not in snapshot.fallback_candidates
+        ):
+            return False
+
+        if (
+            device_id not in snapshot.observations
+            and len(snapshot.observations) >= _MAX_GRITLOCK_OBSERVATIONS
+        ):
+            snapshot.overflowed = True
+            snapshot.updated.set()
+            self._clear_gritlock_startup_snapshot(snapshot)
+            return False
+
+        snapshot.observations[device_id] = (locked, receive_sequence)
+        snapshot.last_received_monotonic = time.monotonic()
+        snapshot.updated.set()
+        return True
+
+    async def _async_collect_gritlock_startup(
+        self,
+        snapshot: _GritlockStartupSnapshot,
+    ) -> None:
+        """Quiet-settle fallback evidence or expire the bounded window."""
+        active_task = asyncio.current_task()
+        timed_out = False
+        try:
+            while (
+                self._gritlock_startup_snapshot is snapshot
+                and self._reconciliation_enabled
+                and self._mqtt_connected
+                and snapshot.connection_generation
+                == self._mqtt_connection_generation
+            ):
+                snapshot.updated.clear()
+                current_time = time.monotonic()
+                if self._settle_gritlock_startup_snapshot(
+                    snapshot,
+                    now=current_time,
+                ):
+                    return
+                if snapshot.overflowed:
+                    return
+                remaining = snapshot.deadline_monotonic - current_time
+                if remaining <= 0:
+                    timed_out = True
+                    return
+                wait_timeout = remaining
+                if snapshot.last_received_monotonic is not None:
+                    quiet_remaining = _GRITLOCK_STARTUP_QUIET_TIME - (
+                        current_time - snapshot.last_received_monotonic
+                    )
+                    wait_timeout = min(
+                        wait_timeout,
+                        max(0.0, quiet_remaining),
+                    )
+                try:
+                    await asyncio.wait_for(
+                        snapshot.updated.wait(),
+                        timeout=wait_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if self._gritlock_startup_snapshot is snapshot:
+                self._gritlock_startup_snapshot = None
+            if self._gritlock_startup_task is active_task:
+                self._gritlock_startup_task = None
+            if (
+                timed_out
+                and self._reconciliation_enabled
+                and self._mqtt_connected
+                and snapshot.connection_generation
+                == self._mqtt_connection_generation
+                and self.gritlock_state is None
+            ):
+                _LOGGER.warning(
+                    "GRITLock startup state hydration was incomplete"
+                )
+
+    def set_mqtt_connected(self, connected: bool) -> bool:
+        """Update broker state on the event loop and notify once per change."""
+        if not isinstance(connected, bool):
+            raise TypeError("MQTT connection state must be a boolean")
+        if self._mqtt_connected == connected:
+            return False
+        self._mqtt_connection_generation += 1
+        self._mqtt_connected = connected
+        if connected:
+            self._begin_gritlock_startup_snapshot()
+        else:
+            self.cancel_state_reconciliation()
+            self._cancel_rfid_event_refreshes()
+            self._reset_gritlock_mqtt_state()
+            self._wake_mqtt_state_waiters()
+        self.async_update_listeners()
+        return True
+
+    def _wake_mqtt_state_waiters(self) -> None:
+        """Wake bounded state waiters without retaining message details."""
+        for waiter in tuple(self._mqtt_state_waiters):
+            if not waiter.done():
+                waiter.set_result(None)
+
+    def start_state_reconciliation(self) -> bool:
+        """Start or coalesce one gate/RFID/trigger reconciliation pass."""
+        if not self._reconciliation_enabled or not self._mqtt_connected:
+            return False
+        task = self._reconciliation_task
+        if task is not None and not task.done():
+            self._reconcile_again = True
+            return False
+        self._reconcile_again = False
+        self._reconciliation_task = asyncio.create_task(
+            self._async_reconciliation_loop()
+        )
+        return True
+
+    def cancel_state_reconciliation(self) -> None:
+        """Cancel any in-flight telemetry reconciliation pass."""
+        self._reconcile_again = False
+        self._clear_startup_hydration()
+        self._clear_gritlock_startup_snapshot()
+        task = self._reconciliation_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def async_stop_state_reconciliation(self) -> None:
+        """Cancel and await telemetry work during unload or failed setup."""
+        self._reconciliation_enabled = False
+        startup_task = self._gritlock_startup_task
+        self.cancel_state_reconciliation()
+        event_tasks = tuple(set(self._rfid_event_tasks.values()))
+        self._cancel_rfid_event_refreshes()
+        if event_tasks:
+            await asyncio.gather(*event_tasks, return_exceptions=True)
+        self._rfid_event_tasks.clear()
+        self._rfid_event_in_flight.clear()
+        self._rfid_event_trailing.clear()
+        task = self._reconciliation_task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if startup_task is not None:
+            await asyncio.gather(startup_task, return_exceptions=True)
+        telemetry_tasks = tuple(set(self._telemetry_request_tasks.values()))
+        for telemetry_task in telemetry_tasks:
+            if not telemetry_task.done():
+                telemetry_task.cancel()
+        if telemetry_tasks:
+            await asyncio.gather(*telemetry_tasks, return_exceptions=True)
+        self._telemetry_request_tasks.clear()
+        self._telemetry_request_waiters.clear()
+        rfid_tasks = tuple(self._rfid_read_tasks)
+        for rfid_task in rfid_tasks:
+            if not rfid_task.done():
+                rfid_task.cancel()
+        if rfid_tasks:
+            await asyncio.gather(*rfid_tasks, return_exceptions=True)
+        self._rfid_read_tasks.clear()
+        settle_task = self._gritlock_settle_task
+        self._reset_gritlock_mqtt_state()
+        if settle_task is not None and not settle_task.done():
+            await asyncio.gather(settle_task, return_exceptions=True)
+        self._wake_mqtt_state_waiters()
+
+    async def _async_reconciliation_loop(self) -> None:
+        current_task = asyncio.current_task()
+        ran_pass = False
+        reconciled = True
+        try:
+            for _ in range(_RECONCILIATION_MAX_PASSES):
+                if (
+                    not self._reconciliation_enabled
+                    or not self._mqtt_connected
+                ):
+                    break
+                ran_pass = True
+                self._reconcile_again = False
+                reconciled = await self._async_request_device_telemetry()
+                if not self._reconcile_again:
+                    break
+            if ran_pass and not reconciled:
+                _LOGGER.warning(
+                    "GRIT device state reconciliation was incomplete"
+                )
+            self._reconcile_again = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.warning("GRIT device state reconciliation failed")
+        finally:
+            if self._reconciliation_task is current_task:
+                restart = (
+                    self._reconcile_again
+                    and self._reconciliation_enabled
+                    and self._mqtt_connected
+                )
+                self._reconciliation_task = None
+                self._reconcile_again = False
+                if restart:
+                    self.start_state_reconciliation()
+
+    async def _async_request_device_telemetry(self) -> bool:
+        """Request and await fresh startup state for supported devices."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+
+        targets: list[tuple[str, str]] = []
+        inventory_incomplete = False
+        expected_triggers = frozenset[str]()
+        for device_type in _STARTUP_TELEMETRY_DEVICE_TYPES:
+            collection = devices.get(device_type)
+            if not isinstance(collection, list):
+                continue
+            identifiers = [
+                _telemetry_identifier(device) for device in collection
+            ]
+            counts = Counter(
+                identifier
+                for identifier in identifiers
+                if identifier is not None
+            )
+            inventory_incomplete = inventory_incomplete or any(
+                identifier is None for identifier in identifiers
+            ) or any(count != 1 for count in counts.values())
+            unique = [
+                identifier
+                for identifier in identifiers
+                if identifier is not None and counts[identifier] == 1
+            ]
+            if device_type == "trigger":
+                rest_participants, rest_usable = (
+                    self._rest_gritlock_participants(devices)
+                )
+                expected_triggers = (
+                    rest_participants
+                    if rest_usable
+                    else frozenset(unique)
+                )
+                unique = [
+                    identifier
+                    for identifier in unique
+                    if identifier in expected_triggers
+                ]
+            targets.extend((device_type, identifier) for identifier in unique)
+
+        truncated = len(targets) > _RECONCILIATION_MAX_TARGETS
+        targets = targets[:_RECONCILIATION_MAX_TARGETS]
+        response_targets = {
+            target for target in targets if target[0] == "gate"
+        }
+        session = _StartupHydration(
+            connection_generation=self._mqtt_connection_generation,
+            after_sequence=self._mqtt_receive_sequence,
+            requested_targets=set(),
+            observed_targets=set(),
+            response_events={
+                target: asyncio.Event() for target in response_targets
+            },
+        )
+        self._clear_startup_hydration()
+        self._startup_hydration = session
+        semaphore = asyncio.Semaphore(_RECONCILIATION_CONCURRENCY)
+
+        async def request_one(
+            device_type: str,
+            device_id: str,
+        ) -> bool:
+            target = (device_type, device_id)
+            try:
+                async with semaphore:
+                    if (
+                        self._startup_hydration is not session
+                        or not self._reconciliation_enabled
+                        or not self._mqtt_connected
+                        or self._mqtt_connection_generation
+                        != session.connection_generation
+                    ):
+                        return False
+                    session.requested_targets.add(target)
+                    await self._async_request_target_telemetry(
+                        device_type,
+                        device_id,
+                        cancel_if_unshared=True,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+            if device_type in {"rfid", "trigger"}:
+                return True
+            return await self._async_wait_startup_response(session, target)
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        request_one(device_type, device_id)
+                        for device_type, device_id in targets
+                    )
+                ),
+                timeout=_RECONCILIATION_PASS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._clear_startup_hydration(session)
+        return not truncated and not inventory_incomplete and all(results)
+
+    async def _async_request_target_telemetry(
+        self,
+        device_type: str,
+        device_id: str,
+        *,
+        cancel_if_unshared: bool = False,
+    ) -> None:
+        """Coalesce one bounded telemetry request for a supported target."""
+        key = (device_type, device_id)
+        task = self._telemetry_request_tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self.api.request_device_telemetry(device_type, device_id)
+            )
+            self._telemetry_request_tasks[key] = task
+
+            def discard(completed: asyncio.Task[None]) -> None:
+                if self._telemetry_request_tasks.get(key) is completed:
+                    self._telemetry_request_tasks.pop(key, None)
+
+            task.add_done_callback(discard)
+        self._telemetry_request_waiters[key] = (
+            self._telemetry_request_waiters.get(key, 0) + 1
+        )
+        cancelled = False
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            remaining = self._telemetry_request_waiters.get(key, 1) - 1
+            if remaining <= 0:
+                self._telemetry_request_waiters.pop(key, None)
+                should_cancel = (
+                    cancel_if_unshared or not self._reconciliation_enabled
+                )
+                if cancelled and should_cancel and not task.done():
+                    task.cancel()
+            else:
+                self._telemetry_request_waiters[key] = remaining
+
+    def _mqtt_field_observation(
+        self,
+        device_type: str,
+        device_id: str,
+        field: str,
+        after_sequence: int,
+    ) -> Any:
+        """Return a field only when MQTT observed it after the boundary."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return _INVALID
+        collection = devices.get(device_type)
+        if not isinstance(collection, list):
+            return _INVALID
+        matches = [
+            device
+            for device in collection
+            if device_id in _device_identifiers(device)
+        ]
+        if len(matches) != 1:
+            return _INVALID
+        state = _sanitize_mqtt_state(matches[0].get(MQTT_STATE_KEY))
+        if state is None:
+            return _INVALID
+        observations = state.get(_FIELD_OBSERVATIONS_KEY)
+        if not isinstance(observations, dict):
+            return _INVALID
+        observed_sequence = _local_receive_sequence(observations.get(field))
+        if (
+            observed_sequence is _INVALID
+            or observed_sequence <= after_sequence
+        ):
+            return _INVALID
+        return state.get(field, _INVALID)
+
+    async def async_confirm_device_state(
+        self,
+        device_type: str,
+        device_id: Any,
+        expected: bool,
+        *,
+        after_sequence: int,
+        timeout: float,
+    ) -> bool:
+        """Request gate telemetry and require a newer matching MQTT observation."""
+        field = _COMMAND_STATE_FIELDS.get(device_type)
+        normalized_id = _normalize_identifier(device_id)
+        if (
+            field is None
+            or normalized_id is None
+            or not isinstance(expected, bool)
+            or _local_receive_sequence(after_sequence) is _INVALID
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+        ):
+            return False
+
+        connection_generation = self._mqtt_connection_generation
+
+        def confirmation_result() -> bool | None:
+            observation = self._mqtt_field_observation(
+                device_type,
+                normalized_id,
+                field,
+                after_sequence,
+            )
+            if observation is expected:
+                return True
+            return None
+
+        async def request_and_wait() -> bool:
+            if (
+                not self._reconciliation_enabled
+                or not self._mqtt_connected
+                or self._mqtt_connection_generation != connection_generation
+            ):
+                return False
+            await self._async_request_target_telemetry(
+                device_type,
+                normalized_id,
+            )
+            while (
+                self._reconciliation_enabled
+                and self._mqtt_connected
+                and self._mqtt_connection_generation == connection_generation
+            ):
+                result = confirmation_result()
+                if result is not None:
+                    return result
+                if len(self._mqtt_state_waiters) >= _MAX_MQTT_STATE_WAITERS:
+                    return False
+                waiter = asyncio.get_running_loop().create_future()
+                self._mqtt_state_waiters.add(waiter)
+                try:
+                    result = confirmation_result()
+                    if result is not None:
+                        return result
+                    await waiter
+                finally:
+                    self._mqtt_state_waiters.discard(waiter)
+            return False
+
+        try:
+            return await asyncio.wait_for(request_and_wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+
+    async def async_wait_for_gritlock_state(
+        self,
+        expected: bool,
+        *,
+        after_connection_generation: int,
+        after_receive_sequence: int,
+        timeout: float,
+    ) -> bool:
+        """Wait for one fresh live /gl observation on this connection."""
+        if (
+            not isinstance(expected, bool)
+            or isinstance(after_connection_generation, bool)
+            or not isinstance(after_connection_generation, int)
+            or after_connection_generation <= 0
+            or isinstance(after_receive_sequence, bool)
+            or not isinstance(after_receive_sequence, int)
+            or after_receive_sequence < 0
+            or after_receive_sequence > self._mqtt_receive_sequence
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+            or not self._mqtt_connected
+            or self._mqtt_connection_generation
+            != after_connection_generation
+        ):
+            return False
+
+        def result() -> bool | None:
+            if (
+                not self._reconciliation_enabled
+                or not self._mqtt_connected
+                or self._mqtt_connection_generation
+                != after_connection_generation
+            ):
+                return False
+            observation = self._gritlock_state_observation
+            if (
+                observation is None
+                or observation.connection_generation
+                != after_connection_generation
+                or observation.last_receive_sequence
+                <= after_receive_sequence
+                or observation.first_receive_sequence
+                <= after_receive_sequence
+            ):
+                return None
+            if observation.source == _GRITLOCK_SOURCE_DISAGREEMENT:
+                return False
+            if observation.source != _GRITLOCK_SOURCE_LIVE:
+                return None
+            return observation.state is expected
+
+        async def wait_for_result() -> bool:
+            while True:
+                outcome = result()
+                if outcome is not None:
+                    return outcome
+                if len(self._mqtt_state_waiters) >= _MAX_MQTT_STATE_WAITERS:
+                    return False
+                waiter = asyncio.get_running_loop().create_future()
+                self._mqtt_state_waiters.add(waiter)
+                try:
+                    outcome = result()
+                    if outcome is not None:
+                        return outcome
+                    await waiter
+                finally:
+                    self._mqtt_state_waiters.discard(waiter)
+
+        try:
+            return await asyncio.wait_for(wait_for_result(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return result() is True
+
+    def _apply_gritlock_observation(
+        self,
+        trigger_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Add strict trigger /gl evidence to the continuous live burst."""
+        explicitly_participating = _strict_binary_bool(
+            payload.get("gte", _INVALID)
+        )
+        locked = _strict_binary_bool(payload.get("gls", _INVALID))
+        if explicitly_participating is _INVALID or locked is _INVALID:
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: invalid GRITLock state"
+            )
+            return False
+
+        now = time.monotonic()
+        burst = self._gritlock_live_burst
+        if (
+            burst is not None
+            and burst.connection_generation
+            != self._mqtt_connection_generation
+        ):
+            self._gritlock_live_burst = None
+            self._cancel_gritlock_settle_task()
+            burst = None
+        if (
+            burst is not None
+            and burst.last_received_monotonic is not None
+            and now - burst.last_received_monotonic
+            >= _GRITLOCK_SETTLE_TIME
+        ):
+            self._settle_gritlock_burst(burst, now=now)
+            burst = self._gritlock_live_burst
+        if burst is None:
+            burst = _GritlockBurst(
+                connection_generation=self._mqtt_connection_generation,
+                observations={},
+            )
+            self._gritlock_live_burst = burst
+
+        if (
+            trigger_id not in burst.observations
+            and len(burst.observations) >= _MAX_GRITLOCK_OBSERVATIONS
+        ):
+            burst.overflowed = True
+            burst.last_received_monotonic = now
+            self._ensure_gritlock_settle_task(burst)
+            self._wake_mqtt_state_waiters()
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: GRITLock state limit reached"
+            )
+            return False
+
+        self._clear_gritlock_startup_snapshot()
+        self._mqtt_receive_sequence += 1
+        burst.observations[trigger_id] = _GritlockObservation(
+            explicitly_participating=explicitly_participating,
+            locked=locked,
+            receive_sequence=self._mqtt_receive_sequence,
+            received_monotonic=now,
+        )
+        burst.last_received_monotonic = now
+        self._ensure_gritlock_settle_task(burst)
+        self._wake_mqtt_state_waiters()
+        return True
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        self._refresh_sequence += 1
+        refresh_sequence = self._refresh_sequence
+        hub_refreshed = False
+        triggers_refreshed = False
+        previous_data = self.data if isinstance(self.data, dict) else {}
+        previous_devices = previous_data.get("devices", {})
+        previous_hub = previous_data.get("hub")
+        data: dict[str, Any] = {
+            "devices": {},
+            "hub": previous_hub if isinstance(previous_hub, dict) else None,
+            "health": None,
+            "errors": {},
+        }
+        try:
+            await self.api.health_check()
+            data["health"] = {"reachable": True}
+        except GritHubApiError as err:
+            raise UpdateFailed(str(err)) from err
+
+        try:
+            refreshed_hub = await self.api.get_hub()
+            if isinstance(refreshed_hub, dict) and refreshed_hub:
+                data["hub"] = refreshed_hub
+                hub_refreshed = True
+        except GritHubApiError as err:
+            data["errors"]["hub"] = str(err)
+
+        for dev_type in DEVICE_TYPES:
+            try:
+                data["devices"][dev_type] = await self.api.get_collection(
+                    dev_type
+                )
+                if dev_type == "trigger":
+                    triggers_refreshed = True
+            except GritHubApiError as err:
+                previous_collection = previous_devices.get(dev_type, [])
+                if (
+                    dev_type in _RECONCILIATION_DEVICE_TYPES
+                    and isinstance(previous_collection, list)
+                ):
+                    data["devices"][dev_type] = [
+                        dict(device)
+                        for device in previous_collection
+                        if isinstance(device, dict)
+                    ]
+                else:
+                    data["devices"][dev_type] = []
+                data["errors"][dev_type] = str(err)
+
+        self._preserve_collector_rest_state(
+            previous_devices,
+            data["devices"],
+        )
+        if not await self._async_refresh_collector_states(data["devices"]):
+            data["errors"]["collector_state"] = (
+                "Collector state refresh was incomplete"
+            )
+        self._preserve_rfid_rest_state(
+            previous_devices,
+            data["devices"],
+        )
+        if not await self._async_refresh_rfid_states(data["devices"]):
+            data["errors"]["rfid_state"] = (
+                "RFID state refresh was incomplete"
+            )
+
+        latest_data = self.data if isinstance(self.data, dict) else previous_data
+        latest_devices = latest_data.get("devices", previous_devices)
+        self._preserve_collector_rest_state(
+            latest_devices,
+            data["devices"],
+        )
+        self._preserve_rfid_rest_state(
+            latest_devices,
+            data["devices"],
+        )
+        _preserve_mqtt_state(
+            latest_devices,
+            data["devices"],
+        )
+        if hub_refreshed:
+            self._hub_update_sequence = refresh_sequence
+        if triggers_refreshed:
+            self._gritlock_update_sequence = refresh_sequence
+        return data
+
+    def handle_mqtt_message(
+        self,
+        hub_id: Any,
+        device_type: Any,
+        device_id: Any,
+        message_type: Any,
+        payload: Any,
+    ) -> bool:
+        """Apply one already-parsed MQTT message without retaining raw input."""
+        if self._expected_mqtt_hub_id is None:
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: hub identity is not configured"
+            )
+            return False
+
+        normalized_hub_id = _normalize_identifier(hub_id)
+        normalized_device_id = _normalize_identifier(device_id)
+        normalized_message_type = _normalize_message_type(message_type)
+        if (
+            normalized_hub_id != self._expected_mqtt_hub_id
+            or normalized_device_id is None
+            or normalized_message_type is None
+            or not isinstance(device_type, str)
+            or device_type not in DEVICE_TYPES
+            or not isinstance(payload, dict)
+        ):
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: invalid routing or payload"
+            )
+            return False
+
+        if not isinstance(self.data, dict):
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: coordinator data is unavailable"
+            )
+            return False
+        devices = self.data.get("devices")
+        if not isinstance(devices, dict):
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: coordinator data is unavailable"
+            )
+            return False
+        collection = devices.get(device_type)
+        if not isinstance(collection, list):
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: device collection is unavailable"
+            )
+            return False
+
+        matches = [
+            (index, device)
+            for index, device in enumerate(collection)
+            if normalized_device_id in _device_identifiers(device)
+        ]
+        if len(matches) != 1:
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: device identity is not unique"
+            )
+            return False
+
+        root_message_type = normalized_message_type.split("/", 1)[0].lower()
+        rfid_event_scheduled = (
+            device_type == "rfid"
+            and normalized_message_type in {"s", "st"}
+            and self._schedule_rfid_event_refresh(normalized_device_id)
+        )
+        gritlock_startup_accepted = False
+        if (
+            device_type == "trigger"
+            and root_message_type in _GRITLOCK_STARTUP_RESPONSE_TYPES
+        ):
+            receive_sequence = self._mqtt_receive_sequence + 1
+            gritlock_startup_accepted = (
+                self._record_gritlock_startup_observation(
+                    normalized_device_id,
+                    root_message_type,
+                    payload,
+                    receive_sequence,
+                )
+            )
+            if gritlock_startup_accepted:
+                self._mqtt_receive_sequence = receive_sequence
+
+        sequence_present, source_sequence = _ordering_value(
+            payload,
+            ("source_sequence", "sequence", "seq"),
+            _source_sequence,
+        )
+        timestamp_present, source_timestamp = _ordering_value(
+            payload,
+            ("source_timestamp", "timestamp", "ts"),
+            _source_timestamp,
+        )
+        if (
+            (sequence_present and source_sequence is _INVALID)
+            or (timestamp_present and source_timestamp is _INVALID)
+        ):
+            if rfid_event_scheduled or gritlock_startup_accepted:
+                return True
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: invalid ordering metadata"
+            )
+            return False
+
+        if device_type == "trigger" and root_message_type == "gl":
+            return self._apply_gritlock_observation(
+                normalized_device_id, payload
+            )
+
+        updates = _payload_state(
+            device_type, normalized_message_type, payload
+        )
+        if updates is None:
+            if gritlock_startup_accepted or rfid_event_scheduled:
+                self._wake_mqtt_state_waiters()
+                return True
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: no supported state"
+            )
+            return False
+
+        index, device = matches[0]
+        previous_state = (
+            _sanitize_mqtt_state(device.get(MQTT_STATE_KEY)) or {}
+        )
+        categories = {_FIELD_CATEGORIES[field] for field in updates}
+        previous_ordering = previous_state.get("_ordering", {})
+        if not isinstance(previous_ordering, dict):
+            previous_ordering = {}
+
+        for category in categories:
+            marker = previous_ordering.get(category, {})
+            if not isinstance(marker, dict):
+                continue
+            previous_sequence = marker.get("source_sequence")
+            previous_timestamp = marker.get("source_timestamp")
+            if (
+                previous_sequence is not None
+                and (
+                    not sequence_present
+                    or source_sequence <= previous_sequence
+                )
+            ):
+                if rfid_event_scheduled or gritlock_startup_accepted:
+                    return True
+                _LOGGER.debug(
+                    "GRIT MQTT message rejected: update is not newer"
+                )
+                return False
+            if (
+                previous_timestamp is not None
+                and (
+                    not timestamp_present
+                    or source_timestamp <= previous_timestamp
+                )
+            ):
+                if rfid_event_scheduled or gritlock_startup_accepted:
+                    return True
+                _LOGGER.debug(
+                    "GRIT MQTT message rejected: update is not newer"
+                )
+                return False
+
+        next_state = dict(previous_state)
+        next_state.update(updates)
+        if not gritlock_startup_accepted:
+            self._mqtt_receive_sequence += 1
+        next_state[_LOCAL_RECEIVE_SEQUENCE_KEY] = (
+            self._mqtt_receive_sequence
+        )
+
+        next_state["last_received_at"] = datetime.now(timezone.utc)
+        if sequence_present:
+            next_state["source_sequence"] = source_sequence
+        else:
+            next_state.pop("source_sequence", None)
+        if timestamp_present:
+            next_state["source_timestamp"] = source_timestamp
+        else:
+            next_state.pop("source_timestamp", None)
+
+        previous_observations = previous_state.get(
+            _FIELD_OBSERVATIONS_KEY,
+            {},
+        )
+        next_observations = (
+            dict(previous_observations)
+            if isinstance(previous_observations, dict)
+            else {}
+        )
+        for field in updates:
+            next_observations[field] = self._mqtt_receive_sequence
+        next_state[_FIELD_OBSERVATIONS_KEY] = next_observations
+
+        self._record_startup_hydration(
+            device_type,
+            normalized_device_id,
+            root_message_type,
+            payload,
+            updates,
+            self._mqtt_receive_sequence,
+        )
+
+        next_ordering = {
+            category: dict(marker)
+            for category, marker in previous_ordering.items()
+            if category in _ORDERING_CATEGORIES and isinstance(marker, dict)
+        }
+        for category in categories:
+            marker: dict[str, Any] = {}
+            if sequence_present:
+                marker["source_sequence"] = source_sequence
+            if timestamp_present:
+                marker["source_timestamp"] = source_timestamp
+            # Without source metadata, arrival order is the only available order.
+            if marker:
+                next_ordering[category] = marker
+            else:
+                next_ordering.pop(category, None)
+        if next_ordering:
+            next_state["_ordering"] = next_ordering
+        else:
+            next_state.pop("_ordering", None)
+
+        next_data = dict(self.data)
+        next_devices = dict(devices)
+        next_collection = list(collection)
+        next_device = dict(device)
+        next_device[MQTT_STATE_KEY] = next_state
+        next_collection[index] = next_device
+        next_devices[device_type] = next_collection
+        next_data["devices"] = next_devices
+        self.async_set_updated_data(next_data)
+        self._wake_mqtt_state_waiters()
+        return True
