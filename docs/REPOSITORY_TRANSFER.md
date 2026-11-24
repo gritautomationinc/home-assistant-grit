@@ -122,8 +122,8 @@ history.
 ## Reference inventory after transfer
 
 Canonical repository references in `AGENTS.md`, the README, release
-documentation, and manifest now use GoDeeGo Productions and the verified final
-URL. The only retained former-owner handle is the manifest's individual
+documentation, and manifest now use the verified final URL. The only retained
+former-owner handle is the manifest's individual
 maintainer codeowner, as described above. HACS final-URL acceptance, Private
 Vulnerability Reporting enablement, CODEOWNERS policy, badges, and publication
 remain pending.

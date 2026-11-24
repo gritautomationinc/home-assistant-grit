@@ -210,7 +210,9 @@ class DocumentationTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("Copyright (c) 2026 GoDeeGo Productions", license_text)
+        self.assertIn(
+            "Copyright (c) 2026 GRIT Automation, Inc.", license_text
+        )
         self.assertIn(
             "GitHub Private Vulnerability Reporting", security_flat
         )

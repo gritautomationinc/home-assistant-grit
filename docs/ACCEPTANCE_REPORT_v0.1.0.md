@@ -180,8 +180,8 @@ default-catalogue submission remain separate future decisions.
 
 ## 20. Final acceptance checklist
 
-- [x] GoDeeGo Productions display name and namespace verified.
-- [x] MIT licence and GoDeeGo Productions copyright notice approved.
+- [x] GRIT Automation, Inc. display name and namespace verified.
+- [x] MIT licence and GRIT Automation, Inc. copyright notice approved.
 - [x] GitHub Private Vulnerability Reporting approved as the security channel.
 - [x] Organization/destination created and repository transferred.
 - [x] Final repository URL and local Git remote verified after transfer.
