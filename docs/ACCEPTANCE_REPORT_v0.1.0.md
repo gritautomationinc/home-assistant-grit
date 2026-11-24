@@ -16,15 +16,14 @@ device type, command, endpoint, platform, discovery field, or publishing path.
 
 - Published version: `0.1.0` in `manifest.json`.
 - Release date: `2026-08-04`.
-- Release commit: [`9464dbab1798cae3b2d0f538d0db3ed64d510884`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/commit/9464dbab1798cae3b2d0f538d0db3ed64d510884).
+- Release commit: [`9464dbab1798cae3b2d0f538d0db3ed64d510884`](https://github.com/gritautomationinc/home-assistant-grit/commit/9464dbab1798cae3b2d0f538d0db3ed64d510884).
 - Tag: `v0.1.0`, pointing to the release commit above.
-- GitHub release: [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0).
+- GitHub release: [GRIT Hub for Home Assistant v0.1.0](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.0).
 - Publication state: the tag, GitHub release, and release notes are published.
   This report does not assert a HACS default-catalogue submission.
-- Approved owner decisions: GoDeeGo Productions; namespace
-  `GoDeeGo-Productions`; final repository URL
-  `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
-  and GitHub Private Vulnerability Reporting.
+- Approved owner decisions: GRIT Automation, Inc.; namespace `gritautomationinc`;
+  canonical repository URL `https://github.com/gritautomationinc/home-assistant-grit`;
+  MIT licence; and GitHub Private Vulnerability Reporting.
 - Operational state: the destination exists, the transfer and final URL are
   verified, and local `origin` is updated. The repository description, topics,
   Private Vulnerability Reporting, dependency graph, and Dependabot alerts are
@@ -173,7 +172,7 @@ locally without network or equipment interaction.
 Repository transfer, final-URL verification, settings, merged CI, final live
 acceptance, release-commit selection, tag `v0.1.0`, GitHub release, and release
 notes publication are complete. The release is available at
-`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0`.
+`https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.0`.
 
 Maintainer/CODEOWNERS and future commit-identity policy remain unresolved
 non-release governance items. An official GRIT webpage link and any HACS

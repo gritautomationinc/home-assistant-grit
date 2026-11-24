@@ -1,9 +1,9 @@
 # Repository transfer guide
 
-The repository owner is **GoDeeGo Productions**, using the GitHub namespace
-`GoDeeGo-Productions`. The verified final repository URL is:
+This repository is hosted on GitHub under the `gritautomationinc` namespace.
+The canonical repository URL is:
 
-`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
+`https://github.com/gritautomationinc/home-assistant-grit`
 
 The organization/destination exists, the transfer is complete, and the final URL
 and local `origin` have been verified. This guide records those completed facts
@@ -16,17 +16,16 @@ Private Vulnerability Reporting channel are approved. Maintainer ownership,
 future commit-identity policy, Private Vulnerability Reporting enablement, and
 selection of an immutable release commit remain open.
 
-## 2. GoDeeGo Productions destination
+## 2. GRIT Automation destination
 
-The **GoDeeGo Productions** organization and destination repository have been
-created at the `GoDeeGo-Productions` namespace. Account-security settings and
-the public profile remain owner-administered GitHub settings and are not claimed
-complete by this repository.
+The destination repository is hosted under the `gritautomationinc` namespace.
+Account-security settings and the public profile remain owner-administered GitHub
+settings and are not claimed complete by this repository.
 
 ## 3. Completed transfer
 
-The repository was transferred to `GoDeeGo-Productions` with repository name
-`home-assistant-grit-hub`, and the final URL was verified. This does not claim
+The repository is hosted under `gritautomationinc` with repository name
+`home-assistant-grit`, and the final URL was verified. This does not claim
 that `v0.1.0` has been tagged, released, published, or accepted by HACS at the
 final URL.
 
@@ -73,7 +72,7 @@ use these commands to verify or correct another clone:
 
 ```text
 git remote -v
-git remote set-url origin https://github.com/GoDeeGo-Productions/home-assistant-grit-hub.git
+git remote set-url origin https://github.com/gritautomationinc/home-assistant-grit.git
 git remote -v
 ```
 

@@ -6,7 +6,7 @@ acceptance, or publication facts; unchecked items remain unresolved.
 
 ## Repository decisions
 
-- [x] Organisation display name and namespace verified: GoDeeGo Productions / `GoDeeGo-Productions`
+- [x] Organisation display name and namespace verified: GRIT Automation, Inc. / `gritautomationinc`
 - [x] GitHub organisation and destination repository created
 - [x] Repository transferred
 - [x] Final repository URL confirmed after transfer
@@ -75,7 +75,7 @@ below; the unchecked governance and future-distribution items remain separate.
 - [x] Acceptance report signed off
 - [x] Final release commit selected: `9464dbab1798cae3b2d0f538d0db3ed64d510884`
 - [x] Tag `v0.1.0`
-- [x] GitHub release created: [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+- [x] GitHub release created: [GRIT Hub for Home Assistant v0.1.0](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.0)
 - [x] Release notes published
 - [x] HACS custom install retested against final organisation URL
 - [ ] Official GRIT webpage link published

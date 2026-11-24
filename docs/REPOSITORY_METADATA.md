@@ -6,10 +6,10 @@ public release.
 
 ## Verified ownership and destination
 
-- Organisation display name: **GoDeeGo Productions**
-- GitHub namespace: `GoDeeGo-Productions`
+- Organisation display name: **GRIT Automation, Inc.**
+- GitHub namespace: `gritautomationinc`
 - Final repository URL:
-  `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
+  `https://github.com/gritautomationinc/home-assistant-grit`
 - Approved licence: **MIT**
 - Approved security channel: **GitHub Private Vulnerability Reporting**
 
@@ -35,8 +35,7 @@ final URL is verified, and the local `origin` uses that URL.
 
 ## Release and search checklist
 
-- Preserve the verified GoDeeGo Productions ownership and
-  `GoDeeGo-Productions` namespace.
+- Preserve the canonical repository ownership and `gritautomationinc` namespace.
 - Keep canonical repository and issue links pointed at the verified final URL.
 - Enable and verify GitHub Private Vulnerability Reporting before publication.
 - Set the recommended description and topics through GitHub repository settings.
