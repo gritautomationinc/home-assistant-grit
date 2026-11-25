@@ -6,7 +6,7 @@ import asyncio
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import GritHubApiError, bool_state, obj_id, obj_name
+from .api import GritHubApiError, bool_state, obj_id
 from .const import (
     DEVICE_CONFIRM_TIMEOUT,
     DOMAIN,
@@ -30,7 +30,8 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}"
-        self._attr_name = obj_name(device, device_type.title())
+        # Primary entity: name comes from the device (avoids doubled object_ids).
+        self._attr_name = None
         self._attr_icon = "mdi:electric-switch"
 
     @property

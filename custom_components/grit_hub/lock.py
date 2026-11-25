@@ -7,7 +7,7 @@ from collections import Counter
 from homeassistant.components.lock import LockEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import GritHubApiError, obj_id, obj_name
+from .api import GritHubApiError, obj_id
 from .const import DEVICE_CONFIRM_TIMEOUT, DOMAIN, HUB_CONFIRM_TIMEOUT
 from .entity import GritHubEntity
 
@@ -108,7 +108,8 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_rfid_{ident}"
-        self._attr_name = obj_name(device, "RFID reader")
+        # Primary entity: name comes from the device (avoids lock.bandsaw_bandsaw).
+        self._attr_name = None
 
     @property
     def available(self) -> bool:

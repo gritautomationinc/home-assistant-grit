@@ -7,6 +7,7 @@ from enum import IntFlag
 import importlib.util
 import logging
 from pathlib import Path
+import re
 import socket
 import sys
 import types
@@ -727,6 +728,24 @@ class EntityMqttTests(unittest.TestCase):
         return SWITCH_MODULE.GritHubDeviceSwitch(
             self.coordinator, "solenoid", self.switch_device
         )
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+        return slug.strip("_")
+
+    def _suggested_entity_id(self, domain: str, entity: Any) -> str:
+        """Approximate HA object_id with has_entity_name=True."""
+        device_name = entity.device_info["name"]
+        entity_name = getattr(entity, "_attr_name", None)
+        if entity_name is None:
+            object_id = self._slugify(device_name)
+        else:
+            object_id = (
+                f"{self._slugify(device_name)}_"
+                f"{self._slugify(str(entity_name))}"
+            )
+        return f"{domain}.{object_id}"
     def collector_switch(self):
         collectors = self.coordinator.data["devices"]["collector"]
         if not collectors:
@@ -1092,6 +1111,80 @@ class EntityMqttTests(unittest.TestCase):
         self.assertIsNone(cover.current_cover_position)
         self.assertIsNone(cover.is_closed)
         self.assertIsNone(rfid_lock.is_locked)
+
+    def test_primary_entities_use_device_name_without_doubling(self):
+        bandsaw = {"id": "bandsaw", "name": "Bandsaw"}
+        self.coordinator.data["devices"]["rfid"] = [bandsaw]
+        self.coordinator.data["devices"]["gate"] = [
+            {"id": "front-gate", "name": "Front Gate"}
+        ]
+        self.coordinator.data["devices"]["solenoid"] = [
+            {"id": "solenoid-1", "name": "Dust Gate"}
+        ]
+
+        rfid_lock = LOCK_MODULE.GritHubRfidLock(
+            self.coordinator, "rfid", bandsaw
+        )
+        cover = COVER_MODULE.GritHubGateCover(
+            self.coordinator,
+            "gate",
+            self.coordinator.data["devices"]["gate"][0],
+        )
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "solenoid",
+            self.coordinator.data["devices"]["solenoid"][0],
+        )
+
+        for entity in (rfid_lock, cover, switch):
+            self.assertTrue(entity._attr_has_entity_name)
+            self.assertIsNone(entity._attr_name)
+
+        self.assertEqual(
+            self._suggested_entity_id("lock", rfid_lock),
+            "lock.bandsaw",
+        )
+        self.assertNotEqual(
+            self._suggested_entity_id("lock", rfid_lock),
+            "lock.bandsaw_bandsaw",
+        )
+        self.assertEqual(
+            self._suggested_entity_id("cover", cover),
+            "cover.front_gate",
+        )
+        self.assertEqual(
+            self._suggested_entity_id("switch", switch),
+            "switch.dust_gate",
+        )
+
+    def test_existing_registry_entity_ids_persist_across_name_change(self):
+        """unique_id is unchanged; a pre-populated registry keeps entity_id."""
+        bandsaw = {"id": "bandsaw", "name": "Bandsaw"}
+        entity = LOCK_MODULE.GritHubRfidLock(
+            self.coordinator, "rfid", bandsaw
+        )
+        unique_id = entity._attr_unique_id
+        self.assertEqual(unique_id, "grit_hub_rfid_bandsaw")
+
+        # Simulate an older install that registered the doubled object_id.
+        registry = {
+            unique_id: {
+                "entity_id": "lock.bandsaw_bandsaw",
+                "unique_id": unique_id,
+                "platform": "grit_hub",
+            }
+        }
+        # Friendly name follows has_entity_name + device name; entity_id stays.
+        self.assertIsNone(entity._attr_name)
+        self.assertEqual(
+            entity.device_info["name"],
+            "Bandsaw",
+        )
+        self.assertEqual(
+            registry[unique_id]["entity_id"],
+            "lock.bandsaw_bandsaw",
+        )
+        self.assertEqual(registry[unique_id]["unique_id"], unique_id)
 
     def test_mocked_gate_and_rfid_commands_require_fresh_confirmed_state(self):
         rfid = {
@@ -1676,18 +1769,27 @@ class EntityMqttTests(unittest.TestCase):
         last_received = SENSOR_MODULE.GritHubMqttLastReceivedSensor(
             self.coordinator, ENTRY_ID, "gate", self.gate
         )
-        for entity in (rssi, firmware, last_received):
+        # RSSI/firmware stay unavailable until a supported value exists.
+        for entity in (rssi, firmware):
             self.assertFalse(entity.available)
             self.assertIsNone(entity.native_value)
+        # Last-received stays available while MQTT is up; None means never seen.
+        self.assertTrue(last_received.available)
+        self.assertIsNone(last_received.native_value)
 
         self.gate[MQTT_STATE_KEY] = {
             "rssi": True,
             "firmware_version": 123,
             "last_received_at": datetime(2026, 8, 3, 1, 2, 3),
         }
-        for entity in (rssi, firmware, last_received):
+        for entity in (rssi, firmware):
             self.assertFalse(entity.available)
             self.assertIsNone(entity.native_value)
+        self.assertTrue(last_received.available)
+        self.assertIsNone(last_received.native_value)
+
+        self.coordinator.mqtt_connected = False
+        self.assertFalse(last_received.available)
 
     def test_diagnostics_are_created_once_with_stable_non_topic_ids(self):
         sensor_entities = self.run_setup(SENSOR_MODULE, self.hass, self.entry)

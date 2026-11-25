@@ -5,7 +5,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import GritHubApiError, obj_id, obj_name
+from .api import GritHubApiError, obj_id
 from .const import DEVICE_TYPES, DOMAIN
 from .entity import GritHubEntity
 
@@ -41,7 +41,7 @@ class GritHubRefreshDeviceButton(GritHubEntity, ButtonEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}_refresh"
-        self._attr_name = f"{obj_name(device, device_type.title())} Refresh"
+        self._attr_name = "Refresh"
 
     async def async_press(self) -> None:
         try:
@@ -59,7 +59,7 @@ class GritHubLocateDeviceButton(GritHubEntity, ButtonEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}_locate"
-        self._attr_name = f"{obj_name(device, device_type.title())} Locate"
+        self._attr_name = "Locate"
 
     async def async_press(self) -> None:
         try:

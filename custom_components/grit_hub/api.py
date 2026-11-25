@@ -500,18 +500,69 @@ def obj_name(obj: dict[str, Any], fallback: str) -> str:
     return f"{fallback} {ident}" if ident is not None else fallback
 
 
-def bool_state(obj: dict[str, Any]) -> bool | None:
-    for key in ("on", "onOff", "enabled", "active", "open", "locked", "state", "status", "isOn"):
-        if key in obj:
-            value = obj[key]
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, (int, float)):
-                return bool(value)
-            if isinstance(value, str):
-                lowered = value.strip().lower()
-                if lowered in {"on", "open", "enabled", "active", "true", "1", "unlocked", "online"}:
-                    return True
-                if lowered in {"off", "closed", "disabled", "inactive", "false", "0", "locked", "offline"}:
-                    return False
+_BOOL_STATE_KEYS = (
+    "on",
+    "onOff",
+    "enabled",
+    "active",
+    "open",
+    "locked",
+    "state",
+    "status",
+    "isOn",
+)
+_BOOL_STATE_TRUE = frozenset(
+    {"on", "open", "enabled", "active", "true", "1", "unlocked", "online"}
+)
+_BOOL_STATE_FALSE = frozenset(
+    {"off", "closed", "disabled", "inactive", "false", "0", "locked", "offline"}
+)
+
+
+def _coerce_bool_state_value(value: Any, *, allow_nested: bool) -> bool | None:
+    """Coerce one Hub state value; nested dicts are expanded at most once."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _BOOL_STATE_TRUE:
+            return True
+        if lowered in _BOOL_STATE_FALSE:
+            return False
+        return None
+    if allow_nested and isinstance(value, dict):
+        return bool_state(value, _allow_nested=False)
+    return None
+
+
+def bool_state(obj: dict[str, Any], *, _allow_nested: bool = True) -> bool | None:
+    """Return a strict boolean from Hub device state shapes.
+
+    Precedence (first present key wins):
+    ``on``, ``onOff``, ``enabled``, ``active``, ``open``, ``locked``,
+    ``state``, ``status``, ``isOn``.
+
+    Accepted value shapes for each key:
+    - ``bool`` — returned as-is
+    - ``int`` / ``float`` — ``bool(value)`` (``0``/``0.0`` → False)
+    - ``str`` — case-insensitive vocabulary shared by dict and string forms
+      (``on``/``off``, ``true``/``false``, ``1``/``0``, and related aliases)
+    - ``dict`` — one nested pass with the same key precedence (so
+      ``{"state": {"on": true}}`` matches ``{"on": true}`` / ``{"state": "on"}``)
+
+    Unknown keys or unrecognized shapes return ``None``.
+    """
+    if not isinstance(obj, dict):
+        return None
+    for key in _BOOL_STATE_KEYS:
+        if key not in obj:
+            continue
+        coerced = _coerce_bool_state_value(
+            obj[key],
+            allow_nested=_allow_nested,
+        )
+        if coerced is not None:
+            return coerced
     return None
