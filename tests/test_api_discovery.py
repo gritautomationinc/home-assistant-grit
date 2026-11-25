@@ -650,7 +650,7 @@ class ApiHubTests(unittest.TestCase):
                 "api",
             )
         )
-        self.assertEqual(captured["method"], "PUT")
+        self.assertEqual(captured["method"], "POST")
         self.assertEqual(
             captured["path"],
             "/api/command/gate/device%2Fwith%2Fslash/cmd%2Fwith%2Fslash/press%2Fnow/api",

@@ -258,13 +258,14 @@ class GritHubApiClient:
             remote_type, label="Remote type"
         )
         return await self.request(
-            "PUT",
+            "POST",
             "/api/command/"
             f"{quote(normalized_type, safe='')}/"
             f"{quote(normalized_id, safe='')}/"
             f"{quote(normalized_command, safe='')}/"
             f"{quote(normalized_action, safe='')}/"
             f"{quote(normalized_remote, safe='')}",
+            json={},
         )
 
     async def refresh_device(self, device_type: str, device_id: str | int) -> Any:
