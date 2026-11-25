@@ -12,7 +12,7 @@ import os
 if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
     from aiohttp import web
     import pytest
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant.common import MockConfigEntry
     from unittest.mock import patch
 
     from homeassistant.config_entries import ConfigEntryState
@@ -23,11 +23,15 @@ if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
         CONF_BASE_URL,
         CONF_MQTT_HOST,
         CONF_MQTT_HUB_ID,
+        CONF_MQTT_KEEPALIVE,
         CONF_MQTT_PASSWORD,
         CONF_MQTT_PORT,
+        CONF_MQTT_USE_TLS,
         CONF_MQTT_USERNAME,
+        CONF_MQTT_VERIFY_TLS,
         CONF_TOKEN,
         CONF_VERIFY_SSL,
+        DEFAULT_MQTT_KEEPALIVE,
         DEFAULT_MQTT_PORT,
         DEVICE_TYPES,
         DOMAIN,
@@ -37,7 +41,7 @@ if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
 
 
     @pytest.fixture(name="hub_server")
-    async def hub_server_fixture(aiohttp_server):
+    async def hub_server_fixture(aiohttp_server, socket_enabled):
         received: list[dict] = []
 
         async def _health_check(_request: web.Request) -> web.Response:
@@ -110,6 +114,9 @@ if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
                 CONF_MQTT_HUB_ID: _HUB_ID,
                 CONF_MQTT_USERNAME: "user",
                 CONF_MQTT_PASSWORD: "pass",
+                CONF_MQTT_KEEPALIVE: DEFAULT_MQTT_KEEPALIVE,
+                CONF_MQTT_USE_TLS: False,
+                CONF_MQTT_VERIFY_TLS: True,
             },
         )
         entry.add_to_hass(hass)
