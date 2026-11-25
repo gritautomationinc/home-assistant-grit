@@ -2806,34 +2806,40 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _maybe_seed_gritlock_state_from_rest(
         self, *, devices: dict[str, list[dict[str, Any]]]
-    ) -> None:
+    ) -> bool:
         """Seed unknown GRITLock state from REST inventory when consistent.
 
-        This is not device-confirmed; it is a hub REST-derived value.
+        This is not device-confirmed; it is a hub REST-derived value. It never
+        satisfies command confirmation. Returns True when a seed was published.
         """
         if self._gritlock_state_observation is not None:
-            return
+            return False
 
         participants, usable = self._rest_gritlock_participants(devices)
         if not usable or not participants:
-            return
+            return False
 
         state_values: list[bool] = []
         seen_participants: set[str] = set()
-        for trigger in devices.get("trigger", []):
-            trigger_id = trigger.get("id")
-            if not isinstance(trigger_id, str) or trigger_id not in participants:
+        triggers = devices.get("trigger")
+        if not isinstance(triggers, list):
+            return False
+        for trigger in triggers:
+            if not isinstance(trigger, dict):
+                return False
+            trigger_id = _telemetry_identifier(trigger)
+            if trigger_id is None or trigger_id not in participants:
                 continue
             gritlock_state = trigger.get("gritLockState")
             if not isinstance(gritlock_state, bool):
-                return
+                return False
             seen_participants.add(trigger_id)
             state_values.append(gritlock_state)
 
         if seen_participants != set(participants):
-            return
+            return False
         if len(set(state_values)) != 1:
-            return
+            return False
 
         self._gritlock_state_observation = _GritlockStateObservation(
             state=state_values[0],
@@ -2843,6 +2849,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             source=_GRITLOCK_SOURCE_REST_SEED,
             participants=participants,
         )
+        self.async_update_listeners()
+        return True
 
     async def _async_update_data(self) -> dict[str, Any]:
         self._refresh_sequence += 1
@@ -2929,8 +2937,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._hub_update_sequence = refresh_sequence
         if triggers_refreshed:
             self._gritlock_update_sequence = refresh_sequence
-
-        self._maybe_seed_gritlock_state_from_rest(devices=data["devices"])
+            # Seed only from a successful trigger inventory read.
+            self._maybe_seed_gritlock_state_from_rest(devices=data["devices"])
         return data
 
     def handle_mqtt_message(

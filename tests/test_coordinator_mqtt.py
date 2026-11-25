@@ -1133,6 +1133,24 @@ class CoordinatorMqttTests(unittest.TestCase):
             frozenset({"trigger-1"}),
         )
 
+    def test_settle_uses_latest_rest_inventory_for_participation(self):
+        """ADR 0001: participation is evaluated at settle time; latest wins."""
+        instance = self.gritlock_coordinator(3)
+        self.send_gritlock(instance, "trigger-0", 0, 1)
+        self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertEqual(set(burst.observations), {"trigger-0", "trigger-1"})
+
+        instance.data["devices"]["trigger"][0]["gritLockEnabled"] = False
+        instance.data["devices"]["trigger"][2]["gritLockEnabled"] = False
+        self.assertEqual(set(burst.observations), {"trigger-0", "trigger-1"})
+        self.assertTrue(self.settle_gritlock(instance))
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-1"}),
+        )
+
     def test_later_unrelated_status_does_not_overwrite_live_state(self):
         instance = self.gritlock_coordinator(1)
         self.send_gritlock(instance, "trigger-0", 0, 0)
