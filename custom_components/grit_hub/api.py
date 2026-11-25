@@ -10,7 +10,7 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .auth import bearer_authorization_value, validate_bearer_token
-from .const import DEVICE_TYPES, REST_DISCOVERY_TIMEOUT
+from .const import DEVICE_TYPES, REMOTE_TYPES, REST_DISCOVERY_TIMEOUT
 from .hub import normalize_hub_id, sanitize_hub_data
 
 
@@ -20,6 +20,10 @@ class GritHubApiError(Exception):
     def __init__(self, message: str, *, http_status: int | None = None) -> None:
         super().__init__(message)
         self.http_status = http_status
+
+
+class GritHubValidationError(GritHubApiError):
+    """Invalid caller input rejected before any HTTP request."""
 
 
 class GritHubApiClient:
@@ -163,15 +167,10 @@ class GritHubApiClient:
     async def get_rfid_device(self, device_id: str) -> dict[str, Any]:
         """Read and strictly sanitize one RFID reader detail response."""
         if not isinstance(device_id, str):
-            raise GritHubApiError("RFID device identifier is invalid")
-        normalized_id = device_id.strip()
-        if (
-            not normalized_id
-            or normalized_id in {".", ".."}
-            or len(normalized_id) > 128
-            or not normalized_id.isprintable()
-        ):
-            raise GritHubApiError("RFID device identifier is invalid")
+            raise GritHubValidationError("RFID device identifier is invalid")
+        normalized_id = _normalize_path_component(
+            device_id, label="RFID device identifier"
+        )
         data = await self.request(
             "GET",
             f"/api/rfid/{quote(normalized_id, safe='')}",
@@ -182,15 +181,10 @@ class GritHubApiClient:
     async def get_collector_device(self, device_id: str) -> dict[str, Any]:
         """Read and strictly sanitize one collector detail response."""
         if not isinstance(device_id, str):
-            raise GritHubApiError("Collector device identifier is invalid")
-        normalized_id = device_id.strip()
-        if (
-            not normalized_id
-            or normalized_id in {".", ".."}
-            or len(normalized_id) > 128
-            or not normalized_id.isprintable()
-        ):
-            raise GritHubApiError("Collector device identifier is invalid")
+            raise GritHubValidationError("Collector device identifier is invalid")
+        normalized_id = _normalize_path_component(
+            device_id, label="Collector device identifier"
+        )
         data = await self.request(
             "GET",
             f"/api/collector/{quote(normalized_id, safe='')}",
@@ -204,22 +198,24 @@ class GritHubApiClient:
         device_id: str,
     ) -> None:
         """Request current telemetry for one supported mesh device."""
-        if device_type not in {"gate", "rfid", "trigger"}:
-            raise GritHubApiError("Telemetry device type is invalid")
+        if not isinstance(device_type, str) or device_type not in {
+            "gate",
+            "rfid",
+            "trigger",
+        }:
+            raise GritHubValidationError("Telemetry device type is invalid")
         if not isinstance(device_id, str):
-            raise GritHubApiError("Telemetry device identifier is invalid")
-        normalized_id = device_id.strip()
-        if (
-            not normalized_id
-            or normalized_id in {".", ".."}
-            or len(normalized_id) > 128
-            or not normalized_id.isprintable()
-        ):
-            raise GritHubApiError("Telemetry device identifier is invalid")
+            raise GritHubValidationError("Telemetry device identifier is invalid")
+        normalized_type = _normalize_path_component(
+            device_type, label="Telemetry device type"
+        )
+        normalized_id = _normalize_path_component(
+            device_id, label="Telemetry device identifier"
+        )
         response = await self.request(
             "POST",
             "/api/device/mesh-telemetry/refresh/"
-            f"{quote(device_type, safe='')}/{quote(normalized_id, safe='')}",
+            f"{quote(normalized_type, safe='')}/{quote(normalized_id, safe='')}",
             timeout=REST_DISCOVERY_TIMEOUT,
         )
         if not isinstance(response, dict) or response.get("success") is not True:
@@ -230,7 +226,7 @@ class GritHubApiClient:
     ) -> Any:
         normalized_type = _normalize_path_component(device_type, label="Device type")
         if normalized_type not in DEVICE_TYPES:
-            raise GritHubApiError("Device type is invalid")
+            raise GritHubValidationError("Device type is invalid")
         normalized_id = _normalize_path_component(
             device_id, label="Device identifier"
         )
@@ -252,7 +248,7 @@ class GritHubApiClient:
     ) -> Any:
         normalized_type = _normalize_path_component(device_type, label="Device type")
         if normalized_type not in DEVICE_TYPES:
-            raise GritHubApiError("Device type is invalid")
+            raise GritHubValidationError("Device type is invalid")
         normalized_id = _normalize_path_component(device_id, label="Device identifier")
         normalized_command = _normalize_path_component(
             command_name, label="Command name"
@@ -261,6 +257,8 @@ class GritHubApiClient:
         normalized_remote = _normalize_path_component(
             remote_type, label="Remote type"
         )
+        if normalized_remote not in REMOTE_TYPES:
+            raise GritHubValidationError("Remote type is invalid")
         return await self.request(
             "POST",
             "/api/command/"
@@ -275,7 +273,7 @@ class GritHubApiClient:
     async def refresh_device(self, device_type: str, device_id: str | int) -> Any:
         normalized_type = _normalize_path_component(device_type, label="Device type")
         if normalized_type not in DEVICE_TYPES:
-            raise GritHubApiError("Device type is invalid")
+            raise GritHubValidationError("Device type is invalid")
         normalized_id = _normalize_path_component(device_id, label="Device identifier")
         return await self.request(
             "GET",
@@ -285,7 +283,7 @@ class GritHubApiClient:
     async def locate_device(self, device_type: str, device_id: str | int) -> Any:
         normalized_type = _normalize_path_component(device_type, label="Device type")
         if normalized_type not in DEVICE_TYPES:
-            raise GritHubApiError("Device type is invalid")
+            raise GritHubValidationError("Device type is invalid")
         normalized_id = _normalize_path_component(device_id, label="Device identifier")
         return await self.request(
             "GET",
@@ -298,14 +296,24 @@ def _normalize_path_component(
     *,
     label: str,
 ) -> str:
+    """Reject path traversal and encoded separators before any HTTP call (AC5)."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise GritHubValidationError(f"{label} is invalid")
     normalized = str(value).strip()
+    lowered = normalized.lower()
     if (
         not normalized
         or normalized in {".", ".."}
         or len(normalized) > 128
         or not normalized.isprintable()
+        or any(ord(char) < 32 for char in normalized)
+        or "/" in normalized
+        or "\\" in normalized
+        or "%2f" in lowered
+        or "%2e%2e" in lowered
+        or "%5c" in lowered
     ):
-        raise GritHubApiError(f"{label} is invalid")
+        raise GritHubValidationError(f"{label} is invalid")
     return normalized
 
 

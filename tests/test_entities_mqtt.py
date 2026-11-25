@@ -1533,16 +1533,16 @@ class EntityMqttTests(unittest.TestCase):
         self.assertEqual(self.coordinator.confirmation_calls, [])
         self.assertIsNone(cover.is_closed)
 
-    def test_refresh_boundaries_are_captured_before_switch_and_led_commands(self):
+    def test_switch_confirms_from_mqtt_not_rest_refresh(self):
         switch = self.device_switch()
         led = NUMBER_MODULE.GritHubSystemLedBrightnessNumber(
             self.coordinator
         )
         request_refresh = mock.AsyncMock()
+        boundary = self.coordinator.mqtt_receive_sequence
 
         async def switch_command(*_args: Any) -> None:
-            self.coordinator.refresh_sequence += 1
-            self.switch_device["state"] = True
+            self.coordinator.observe_device_state("solenoid", SWITCH_ID, True)
 
         with mock.patch.object(
             self.coordinator.api,
@@ -1556,10 +1556,20 @@ class EntityMqttTests(unittest.TestCase):
             self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
-        request_refresh.assert_awaited_once_with()
+        request_refresh.assert_not_awaited()
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [
+                (
+                    "solenoid",
+                    SWITCH_ID,
+                    True,
+                    boundary,
+                    SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+                )
+            ],
+        )
         self.assertTrue(switch.is_on)
-
-        request_refresh.reset_mock()
 
         async def led_command(*_args: Any) -> None:
             self.coordinator.refresh_sequence += 1
@@ -1593,7 +1603,6 @@ class EntityMqttTests(unittest.TestCase):
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_hook = lambda: None
             with self.assertRaisesRegex(
                 HomeAssistantError,
                 "Device state could not be confirmed",
@@ -1601,6 +1610,7 @@ class EntityMqttTests(unittest.TestCase):
                 self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 1)
 
     def test_matching_stale_state_cannot_confirm_command(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
@@ -1623,9 +1633,10 @@ class EntityMqttTests(unittest.TestCase):
             with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
                 self.loop.run_until_complete(switch.async_turn_off())
 
-        no_refresh.assert_awaited_once_with()
+        no_refresh.assert_not_awaited()
         self.assertTrue(cover.is_closed)
         self.assertEqual(cover.current_cover_position, 20)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 2)
 
     def test_gate_command_is_not_optimistic_while_confirmation_is_pending(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}

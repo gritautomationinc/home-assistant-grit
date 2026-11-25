@@ -60,9 +60,16 @@ _STATE_FIELDS = tuple(_FIELD_CATEGORIES)
 _LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
 _FIELD_OBSERVATIONS_KEY = "_field_observations"
 
-_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector")
+# Preserve prior inventory on collection errors so GRITLock participation and
+# reconciliation targets cannot silently shrink to an empty set mid-burst.
+_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector", "trigger")
 _STARTUP_TELEMETRY_DEVICE_TYPES = ("gate", "rfid", "trigger")
-_COMMAND_STATE_FIELDS = {"gate": "open"}
+_COMMAND_STATE_FIELDS = {
+    "gate": "open",
+    "solenoid": "state",
+    "latch": "state",
+    "powerbank": "state",
+}
 _GATE_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _GRITLOCK_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _RECONCILIATION_CONCURRENCY = 4
@@ -457,9 +464,10 @@ def _payload_state(
 
     # Command-echo topics that should not mutate device state. These frames can
     # be retained/replayed by the broker and must not satisfy confirmations.
+    # Returning {} (not None) still accepts the message for last_received.
     if device_type == "gate" and root_message_type == "mv":
         return {}
-    if device_type in {"solenoid", "powerbank"} and root_message_type == "s":
+    if device_type in SWITCH_DEVICE_TYPES and root_message_type == "s":
         return {}
 
     if device_type == "gate" and root_message_type != "req-tel":
@@ -485,9 +493,11 @@ def _payload_state(
             elif position <= 65:
                 updates["open"] = False
 
+    # Device-originated switch observations only (ADR 0001 / AC2).
+    # Hub command topic `s` is handled above; `gl` / `gls` are not switch state.
     if (
         device_type in SWITCH_DEVICE_TYPES
-        and root_message_type in {"s", "st", "gl", "gls"}
+        and root_message_type in {"st", "sts"}
     ):
         state = _first_valid(payload, ("s", "state"), _strict_bool)
         if state is not _INVALID:
@@ -1719,7 +1729,20 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return None, frozenset(), False
             participants = rest_participants
         else:
-            participants = explicit_participants or frozenset(burst.observations)
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+            triggers = (
+                devices.get("trigger") if isinstance(devices, dict) else None
+            )
+            # Empty trigger inventory (failed poll wiped the collection) must
+            # never confirm LIVE from a partial observation map (AC1).
+            if isinstance(triggers, list) and len(triggers) == 0:
+                return None, frozenset(), False
+            participants = explicit_participants or frozenset(
+                burst.observations
+            )
+        if not participants:
+            return None, frozenset(), False
         states = {
             burst.observations[trigger_id].locked
             for trigger_id in participants
@@ -1757,6 +1780,23 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state, participants, disagreement = self._evaluate_gritlock_burst(
             burst
         )
+        # Incomplete against a usable REST participant set: keep the burst so
+        # later gl-d frames can complete confirmation (AC1). Clearing here
+        # discarded in-flight evidence and allowed a later singleton burst to
+        # confirm a subset.
+        if (
+            not participants
+            and not disagreement
+            and not burst.overflowed
+        ):
+            rest_participants, rest_usable = self._rest_gritlock_participants()
+            if rest_usable and rest_participants:
+                if not force:
+                    return False
+                self._gritlock_live_burst = None
+                self._cancel_gritlock_settle_task()
+                return False
+
         self._gritlock_live_burst = None
         self._cancel_gritlock_settle_task()
         if not participants:
@@ -1798,7 +1838,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if remaining > 0:
                     await asyncio.sleep(remaining)
                     continue
-                self._settle_gritlock_burst(burst)
+                if self._settle_gritlock_burst(burst):
+                    return
+                # Incomplete against REST participants: leave the burst open.
+                # A later gl-d restarts this settle task via
+                # _ensure_gritlock_settle_task.
                 return
         finally:
             if self._gritlock_settle_task is asyncio.current_task():
@@ -2466,7 +2510,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         after_sequence: int,
         timeout: float,
     ) -> bool:
-        """Request gate telemetry and require a newer matching MQTT observation."""
+        """Require a newer matching MQTT observation after a device command."""
         field = _COMMAND_STATE_FIELDS.get(device_type)
         normalized_id = _normalize_identifier(device_id)
         if (
@@ -2481,6 +2525,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         connection_generation = self._mqtt_connection_generation
+        request_telemetry = device_type in _STARTUP_TELEMETRY_DEVICE_TYPES
 
         def confirmation_result() -> bool | None:
             observation = self._mqtt_field_observation(
@@ -2500,10 +2545,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 or self._mqtt_connection_generation != connection_generation
             ):
                 return False
-            await self._async_request_target_telemetry(
-                device_type,
-                normalized_id,
-            )
+            if request_telemetry:
+                await self._async_request_target_telemetry(
+                    device_type,
+                    normalized_id,
+                )
             while (
                 self._reconciliation_enabled
                 and self._mqtt_connected

@@ -904,6 +904,36 @@ class GritLiveMqttTests(unittest.TestCase):
         self.assertIn("GRIT MQTT message rejected: invalid JSON", output)
         self.assertIn("GRIT MQTT connection lost", output)
 
+    def test_foreign_hub_id_is_dropped_before_json_parse(self) -> None:
+        received: list[Any] = []
+        factory = FakeClientFactory()
+        client = self._new_client(
+            expected_hub_id=FABRICATED_HUB_ID,
+            callback=lambda *args: received.append(args),
+        )
+        foreign_topic = (
+            f"grit/ffffffffffffffffffffffffffffffff/gate/device-one/sts"
+        )
+        with self.assertLogs(MQTT_MODULE._LOGGER, level="DEBUG") as captured:
+            with self._paho_patch(factory):
+                self.assertTrue(client.start())
+            fake = factory.instances[0]
+            self._connect_and_acknowledge(fake)
+            fake.on_message(
+                fake,
+                None,
+                FakeMessage(b'{"open":1}', foreign_topic),
+            )
+            client.stop()
+
+        self.assertEqual(received, [])
+        self.assertTrue(
+            any(
+                "hub id does not match" in record.getMessage()
+                for record in captured.records
+            )
+        )
+
     def test_mesh_plain_text_frames_are_debug_not_warning(self) -> None:
         factory = FakeClientFactory()
         client = self._new_client()

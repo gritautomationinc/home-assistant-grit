@@ -514,34 +514,55 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertNotIn("position", state)
         self.assertNotIn("open", state)
 
-    def test_solenoid_and_powerbank_s_command_echo_is_ignored(self):
+    def test_switch_s_command_echo_is_ignored_for_all_switch_types(self):
         devices = _device_map()
         devices["powerbank"] = [{"id": "device-powerbank"}]
+        devices["latch"] = [{"id": "device-latch"}]
+        devices["collector"] = [{"id": "device-collector"}]
         instance = self.coordinator(devices=devices)
 
+        for device_type, device_id in (
+            ("solenoid", "device-switch"),
+            ("powerbank", "device-powerbank"),
+            ("latch", "device-latch"),
+            ("collector", "device-collector"),
+        ):
+            with self.subTest(device_type=device_type):
+                self.assertTrue(
+                    self.send(
+                        instance,
+                        device_type=device_type,
+                        device_id=device_id,
+                        message_type="s",
+                        payload={"state": 1},
+                    )
+                )
+                state = self.mqtt_state(instance, device_type)
+                self.assertNotIn("state", state)
+
+    def test_switch_sts_updates_state_and_gl_does_not(self):
+        instance = self.coordinator()
         self.assertTrue(
             self.send(
                 instance,
                 device_type="solenoid",
                 device_id="device-switch",
-                message_type="s",
+                message_type="sts",
                 payload={"state": 1},
             )
         )
-        state = self.mqtt_state(instance, "solenoid")
-        self.assertNotIn("state", state)
+        self.assertTrue(self.mqtt_state(instance, "solenoid")["state"])
 
-        self.assertTrue(
+        self.assertFalse(
             self.send(
                 instance,
-                device_type="powerbank",
-                device_id="device-powerbank",
-                message_type="s",
-                payload={"state": 1},
+                device_type="solenoid",
+                device_id="device-switch",
+                message_type="gl",
+                payload={"state": 0},
             )
         )
-        state = self.mqtt_state(instance, "powerbank")
-        self.assertNotIn("state", state)
+        self.assertTrue(self.mqtt_state(instance, "solenoid")["state"])
 
     def test_ambiguous_boolean_values_are_rejected(self):
         for raw in ("yes", "enabled", 2, -1, 0.0, None, [], {}):
@@ -587,7 +608,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance,
                 device_type="solenoid",
                 device_id="device-switch",
-                message_type="gls/detail",
+                message_type="st/detail",
                 payload={"state": "closed"},
             )
         )
@@ -959,6 +980,11 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertEqual(second["hub"], first["hub"])
         self.assertIn("hub", second["errors"])
         self.assertIn("trigger", second["errors"])
+        # Failed trigger poll must preserve prior inventory for participation.
+        self.assertEqual(
+            second["devices"]["trigger"],
+            first["devices"]["trigger"],
+        )
 
     def gritlock_coordinator(self, count=2):
         devices = _device_map()
@@ -1150,6 +1176,61 @@ class CoordinatorMqttTests(unittest.TestCase):
             instance.gritlock_participating_trigger_ids,
             frozenset({"trigger-1"}),
         )
+
+    def test_incomplete_quiet_settle_keeps_burst_for_later_gl_d(self):
+        """Missing REST participants must not discard in-flight gl-d evidence."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=10.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertIsNotNone(burst)
+        # Natural settle (force=False) must keep the burst open.
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=False, now=10.5)
+        )
+        self.assertIs(instance._gritlock_live_burst, burst)
+        self.assertEqual(
+            set(burst.observations),
+            {"trigger-0", "trigger-1"},
+        )
+
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=11.0,
+        ):
+            self.send_gritlock(instance, "trigger-2", 0, 1)
+        self.assertTrue(self.settle_gritlock(instance, now=11.5))
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-0", "trigger-1", "trigger-2"}),
+        )
+
+    def test_empty_trigger_inventory_does_not_confirm_subset(self):
+        """Empty trigger list (failed poll) must not confirm from a gl-d subset."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=20.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        # Failed trigger poll previously replaced inventory with [].
+        instance.data["devices"]["trigger"] = []
+        # Without usable REST participants, live settle must not confirm
+        # from the partial observation set alone.
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=True, now=20.5)
+        )
+        self.assertIsNone(instance.gritlock_state)
 
     def test_later_unrelated_status_does_not_overwrite_live_state(self):
         instance = self.gritlock_coordinator(1)
@@ -3673,7 +3754,7 @@ class CollectorStateReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "collector",
                 "collector-fabricated",
-                "s",
+                "st",
                 {"s": False},
             )
         )

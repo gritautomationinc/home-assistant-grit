@@ -16,10 +16,10 @@ Not tagged or published yet.
 | F2 | T6 | Gate `mv` and switch `s` command echoes ignored (`return {}`) |
 | F3 | T5 | GRITLock stays available when unknown; REST seed; late `sts` |
 | F4 | T8 | `device_command` uses POST execute |
-| F5 | T7 | Path-segment hardening before HTTP |
+| F5 | T7 | Path-segment hardening rejects traversal before HTTP |
 | F6 | T9 | Options flow no longer assigns read-only `config_entry` |
 | F7 | T11 | Manual stale-device removal; no auto-prune; no MQTT re-append |
-| F9 | T12 | MQTT topic gate before JSON parse |
+| F9 | T12 | MQTT topic gate (structure, hub id, device type) before JSON parse |
 | F10 | T13 | RFID `sts` refresh; `last_received` on every accepted message |
 | F11 | T10 | Restart/Reboot buttons removed |
 | F12 | T14 | Lockout 502/409 semantics |

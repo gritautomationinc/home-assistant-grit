@@ -25,6 +25,10 @@ class HomeAssistantError(Exception):
     pass
 
 
+class ServiceValidationError(HomeAssistantError):
+    pass
+
+
 class FakeDeviceEntry:
     def __init__(self, identifiers):
         self.identifiers = identifiers
@@ -59,6 +63,7 @@ def _load_runtime():
     voluptuous.Required = lambda key, **kwargs: key
     voluptuous.Optional = lambda key, **kwargs: key
     voluptuous.Any = lambda *args: object()
+    voluptuous.In = lambda options: object()
 
     homeassistant = types.ModuleType("homeassistant")
     config_entries = types.ModuleType("homeassistant.config_entries")
@@ -81,6 +86,7 @@ def _load_runtime():
     exceptions.ConfigEntryError = ConfigEntryError
     exceptions.ConfigEntryNotReady = ConfigEntryNotReady
     exceptions.HomeAssistantError = HomeAssistantError
+    exceptions.ServiceValidationError = ServiceValidationError
     config_entries.ConfigEntry = object
     core.HomeAssistant = object
     core.ServiceCall = object
@@ -123,8 +129,12 @@ def _load_runtime():
         class GritHubApiError(Exception):
             pass
 
+        class GritHubValidationError(GritHubApiError):
+            pass
+
         api.GritHubApiClient = GritHubApiClient
         api.GritHubApiError = GritHubApiError
+        api.GritHubValidationError = GritHubValidationError
         sys.modules[api.__name__] = api
 
         coordinator = types.ModuleType(f"{package_name}.coordinator")
