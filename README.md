@@ -7,13 +7,20 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
+## Notice
+
+This is a community-maintained, unofficial Home Assistant integration for GRIT Hub. It is published by GRIT Automation, Inc. as a convenience.
+
+It is provided AS IS, without warranty of any kind. GRIT Automation, Inc. does not provide support for it and does not guarantee updates, fixes, compatibility with any Home Assistant or GRIT Hub version, or continued availability. Use at your own risk.
+
+Issues and pull requests are welcome, but may not be answered.
+
+See [LICENSE](LICENSE) for the full warranty disclaimer.
+
 > **Release status:** `v0.2.0` is the latest prepared release (manifest and
 > changelog ready). It is not yet tagged or published. Earlier `v0.1.x` releases
 > remain historical. This project remains a HACS Custom Repository and is not a
 > default-catalogue listing.
-
-This project is experimental, provided as-is, and is not affiliated with,
-endorsed by, or supported by GRIT or GRIT Automation.
 
 > [!CAUTION]
 > GRIT equipment can operate gates and physical access-control devices. This
@@ -64,8 +71,8 @@ complete REST participant set is exact only when every member reports current
 `gls`; otherwise the bounded observed reporters settle after 250 ms quiet,
 without waiting for the full five-second window. Refresh requests are
 best-effort stimuli. Startup status and naturally settled
-live `/gl` bursts publish through the same displayed-state field, but only a
-fresh `live_gl` observation newer than a pre-command sequence boundary can
+live `/gl-d` bursts publish through the same displayed-state field, but only a
+fresh `live_gl_d` observation newer than a pre-command sequence boundary can
 confirm explicit Lock or Unlock. There are no command generation IDs or retained
 command-result map. The integration does not publish MQTT or operate equipment
 during startup hydration.

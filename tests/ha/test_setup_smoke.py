@@ -117,4 +117,3 @@ if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
 
             assert await hass.config_entries.async_unload(entry.entry_id)
             await hass.async_block_till_done()
-

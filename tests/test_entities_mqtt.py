@@ -343,6 +343,8 @@ class FakeCoordinator:
         self.api = FakeApi()
         self.listener_updates = 0
         self.gritlock_state_value: bool | None = None
+        self.gritlock_evidence_source_value: str | None = None
+        self.gritlock_live_unconfirmed_value: int | None = None
         self.gritlock_participating_trigger_ids = frozenset({"trigger-test"})
         self.refresh_hook: Callable[[], None] | None = None
         self.refresh_block: asyncio.Event | None = None
@@ -385,6 +387,13 @@ class FakeCoordinator:
     @property
     def gritlock_state(self) -> bool | None:
         return self.gritlock_state_value
+
+    @property
+    def gritlock_evidence_source(self) -> str | None:
+        return self.gritlock_evidence_source_value
+
+    def gritlock_live_unconfirmed_trigger_count(self) -> int | None:
+        return self.gritlock_live_unconfirmed_value
 
     async def async_request_refresh(self) -> None:
         self.refresh_calls += 1
@@ -1934,6 +1943,61 @@ class EntityMqttTests(unittest.TestCase):
                 )
         self.coordinator.refresh_block = None
         self.assertEqual(entity.native_value, 55)
+
+    def test_gritlock_extra_state_attributes_expose_evidence_only(self):
+        entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
+        self.coordinator.gritlock_evidence_source_value = "live_gl_d"
+        self.coordinator.gritlock_live_unconfirmed_value = 2
+        attributes = entity.extra_state_attributes
+        self.assertEqual(
+            attributes,
+            {
+                "evidence_source": "live_gl_d",
+                "unconfirmed_trigger_count": 2,
+            },
+        )
+        serialized = repr(attributes)
+        for excluded in (
+            "trigger-test",
+            "grit_",
+            HUB_ID,
+            HUB_IP,
+            "broker",
+            "password",
+            "token",
+        ):
+            self.assertNotIn(excluded, serialized)
+
+        self.coordinator.gritlock_evidence_source_value = "rest_seed"
+        self.coordinator.gritlock_live_unconfirmed_value = None
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {"evidence_source": "rest_seed"},
+        )
+
+        def confirm(expected: bool) -> bool:
+            self.coordinator.gritlock_state_value = expected
+            return True
+
+        self.coordinator.gritlock_confirmation_hook = confirm
+        self.loop.run_until_complete(entity.async_lock())
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {
+                "evidence_source": "rest_seed",
+                "unconfirmed_trigger_count": 0,
+            },
+        )
+
+        self.coordinator.gritlock_confirmation_hook = None
+        with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(entity.async_unlock())
+        self.assertEqual(
+            entity.extra_state_attributes.get("unconfirmed_trigger_count"),
+            1,
+        )
+        self.assertNotIn("participants", entity.extra_state_attributes)
+        self.assertNotIn("trigger_id", entity.extra_state_attributes)
 
     def test_gritlock_state_and_post_command_confirmation(self):
         entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)

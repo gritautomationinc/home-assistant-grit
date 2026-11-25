@@ -633,6 +633,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return observation.state if observation is not None else None
 
     @property
+    def gritlock_evidence_source(self) -> str | None:
+        """Return the bounded source label for the latest observation."""
+        observation = self._gritlock_state_observation
+        if observation is None:
+            return None
+        source = observation.source
+        return source if isinstance(source, str) and source else None
+
+    @property
     def gritlock_participating_trigger_ids(self) -> frozenset[str]:
         """Return participants from the latest authoritative observation."""
         observation = self._gritlock_state_observation
@@ -2680,6 +2689,20 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for trigger_id, obs in burst.observations.items()
             if obs.receive_sequence > after_receive_sequence
         }
+        return len(set(participants) - observed)
+
+    def gritlock_live_unconfirmed_trigger_count(self) -> int | None:
+        """Best-effort missing REST participants in the active live burst."""
+        participants, usable = self._rest_gritlock_participants()
+        if not usable or not participants:
+            return None
+        burst = self._gritlock_live_burst
+        if (
+            burst is None
+            or burst.connection_generation != self._mqtt_connection_generation
+        ):
+            return None
+        observed = set(burst.observations)
         return len(set(participants) - observed)
 
     def _apply_gritlock_observation(

@@ -17,4 +17,3 @@ The integration declares one Hub version it is verified against, and it warns wh
 ### Consequences
 - Reviewers can independently confirm contract assumptions against fixtures and cited Hub sources.
 - Users get a clear warning on Hub version skew without a hard failure, which avoids breaking existing installs due to updates outside Home Assistant.
-

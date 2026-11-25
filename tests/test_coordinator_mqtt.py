@@ -2454,6 +2454,26 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(task)
             await asyncio.wait_for(task, timeout=1)
 
+    async def test_gritlock_evidence_source_and_live_unconfirmed_count(self):
+        instance = self.gritlock_instance(2)
+        self.assertIsNone(instance.gritlock_evidence_source)
+        self.assertIsNone(instance.gritlock_live_unconfirmed_trigger_count())
+
+        self.emit_gritlock(instance, (("trigger-0", 1, 1),))
+        self.assertEqual(instance.gritlock_live_unconfirmed_trigger_count(), 1)
+        self.assertIsNone(instance.gritlock_evidence_source)
+
+        await self.settle_gritlock(
+            instance,
+            (("trigger-1", 1, 1),),
+        )
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_evidence_source,
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
+        self.assertIsNone(instance.gritlock_live_unconfirmed_trigger_count())
+
     async def test_dion_sparse_unlock_confirms_on_continuous_channel(self):
         instance = self.gritlock_instance(9, enabled_trigger_ids={"trigger-8"})
         boundary_connection = instance.mqtt_connection_generation
