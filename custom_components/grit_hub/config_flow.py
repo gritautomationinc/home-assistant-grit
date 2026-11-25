@@ -685,7 +685,9 @@ class GritHubOptionsFlow(config_entries.OptionsFlow):
     """Configure polling options."""
 
     def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
+        # Home Assistant may expose `config_entry` as a read-only attribute on
+        # OptionsFlow instances; avoid assigning to it directly.
+        self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -698,7 +700,7 @@ class GritHubOptionsFlow(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
-                        default=self.config_entry.options.get(
+                        default=self._config_entry.options.get(
                             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                         ),
                     ): vol.All(
