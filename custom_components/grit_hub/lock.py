@@ -68,13 +68,11 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
             await self.coordinator.api.set_gritlock(locked)
             confirmed = False
             if self.coordinator.mqtt_connected:
-                confirmed = (
-                    await self.coordinator.async_wait_for_gritlock_state(
-                        locked,
-                        after_connection_generation=connection_generation,
-                        after_receive_sequence=confirmation_boundary,
-                        timeout=HUB_CONFIRM_TIMEOUT,
-                    )
+                confirmed = await self.coordinator.async_wait_for_gritlock_state(
+                    locked,
+                    after_connection_generation=connection_generation,
+                    after_receive_sequence=confirmation_boundary,
+                    timeout=HUB_CONFIRM_TIMEOUT,
                 )
         except asyncio.CancelledError:
             raise

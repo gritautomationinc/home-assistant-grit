@@ -2726,6 +2726,17 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             received_monotonic=received_monotonic,
         )
 
+        # Status frames are used to hydrate unknown state (e.g. startup timeout /
+        # reconnect). Once we have a higher-authority state from a live burst
+        # (or a command confirmation), do not allow a later status frame to
+        # overwrite it.
+        if (
+            self._gritlock_state_observation is not None
+            and self._gritlock_state_observation.source
+            == _GRITLOCK_SOURCE_LIVE
+        ):
+            return True
+
         rest_participants, rest_usable = self._rest_gritlock_participants()
         if rest_usable and rest_participants:
             if not rest_participants.issubset(self._gritlock_status_snapshot):
@@ -3038,11 +3049,14 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if updates is None:
             if (
                 gritlock_status_frame
+                and "gls" in payload
                 and self._mqtt_connected
+                and self._gritlock_live_burst is None
                 and not gritlock_startup_accepted
                 and self._gritlock_startup_snapshot is None
             ):
                 receive_sequence = self._mqtt_receive_sequence + 1
+                self._mqtt_receive_sequence = receive_sequence
                 received_monotonic = time.monotonic()
                 accepted = self._apply_gritlock_status_observation(
                     normalized_device_id,
@@ -3052,7 +3066,6 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if not accepted:
                     return False
-                self._mqtt_receive_sequence = receive_sequence
                 self._wake_mqtt_state_waiters()
                 return True
             if gritlock_startup_accepted or rfid_event_scheduled:
@@ -3112,6 +3125,24 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         next_state[_LOCAL_RECEIVE_SEQUENCE_KEY] = (
             self._mqtt_receive_sequence
         )
+
+        if (
+            gritlock_status_frame
+            and "gls" in payload
+            and self._mqtt_connected
+            and self._gritlock_live_burst is None
+            and not gritlock_startup_accepted
+            and self._gritlock_startup_snapshot is None
+        ):
+            received_monotonic = time.monotonic()
+            accepted = self._apply_gritlock_status_observation(
+                normalized_device_id,
+                payload,
+                receive_sequence=self._mqtt_receive_sequence,
+                received_monotonic=received_monotonic,
+            )
+            if not accepted:
+                return False
 
         next_state["last_received_at"] = datetime.now(timezone.utc)
         if sequence_present:

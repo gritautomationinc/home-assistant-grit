@@ -14,6 +14,7 @@ Home Assistant state for GRIT devices is confirmed only by device-originated evi
 - **Device-originated topics are observations**: for example `gl-d` (GRITLock completion), `mv-d` (gate movement completion), `st` and `sts` (device status and reports).
 - **Hub-originated topics are commands, not observations**: for example `gl`, `mv`, `s`. These frames must never update entity state and must never satisfy confirmation waits.
 - **Participation is explicit**: GRITLock participation is derived from the Hub REST `gritLockEnabled` and MQTT `gle` (gritLockEnabled). It is not derived from `gte` (gateTriggerEnabled).
+- **Participation settles against the latest Hub REST inventory**: the set of participating triggers is evaluated at settle time, using the most recent REST inventory. If the inventory changes during a confirmation window, the latest inventory wins.
 - **Hub REST may seed state, with attribution**: when the Hub REST inventory provides persisted per-trigger `gritLockState`, it may be used to seed the integration's GRITLock state. This seed is labeled as Hub-rest-derived, not device-confirmed.
 
 ### Consequences

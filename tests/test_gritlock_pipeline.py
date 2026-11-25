@@ -121,6 +121,22 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(entity.is_locked)
         self.assertTrue(entity.available)
 
+    async def test_command_without_mqtt_confirmation_still_reaches_hub(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": True},
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+
+        with self.assertRaises(entity_tests.HomeAssistantError):
+            await entity.async_lock()
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIsNone(entity.is_locked)
+        self.assertTrue(entity.available)
+
     async def test_dion_startup_manual_lock_and_unlock_command_pipeline(self):
         devices = coordinator_tests._device_map()
         devices["trigger"] = [
