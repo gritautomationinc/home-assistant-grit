@@ -384,6 +384,21 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertFalse(self.send(instance, hub_id="other-hub"))
         self.assertEqual(instance.updated_data, [])
 
+    def test_unknown_device_type_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, device_type="unknown-type"))
+        self.assertEqual(instance.updated_data, [])
+
+    def test_invalid_mqtt_message_type_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, message_type="x" * 200))
+        self.assertEqual(instance.updated_data, [])
+
+    def test_invalid_mqtt_device_identifier_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, device_id="x" * 200))
+        self.assertEqual(instance.updated_data, [])
+
     def test_unknown_and_ambiguous_devices_are_rejected(self):
         instance = self.coordinator()
         self.assertFalse(self.send(instance, device_id="missing-device"))
