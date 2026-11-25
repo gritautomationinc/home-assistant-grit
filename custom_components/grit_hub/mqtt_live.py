@@ -14,6 +14,7 @@ import json
 import math
 import logging
 import threading
+import time
 from typing import Any, TypeAlias
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,6 +26,29 @@ MAX_MQTT_PAYLOAD_SIZE = 65_536
 MAX_MQTT_TOPIC_LENGTH = 512
 MAX_MQTT_TOPIC_COMPONENT_LENGTH = 128
 MAX_MQTT_PAYLOAD_VALUE_TEXT_LENGTH = 128
+# Keep in sync with const.DEVICE_TYPES. mqtt_live stays import-light for tests.
+_ALLOWED_DEVICE_TYPES = frozenset(
+    {
+        "rfid",
+        "solenoid",
+        "latch",
+        "collector",
+        "powerbank",
+        "gate",
+        "airquality",
+        "dustbin",
+        "magswipe",
+        "presence",
+        "pressure",
+        "scanner",
+        "trigger",
+        "xtndr",
+    }
+)
+_NON_DEVICE_TOPIC_TYPES = frozenset(
+    {"mesh", "hub", "global", "gateway"}
+)
+_WARNING_RATE_LIMIT_SECONDS = 600.0
 _ALLOWED_MQTT_PAYLOAD_KEYS = frozenset(
     {
         "p",
@@ -136,6 +160,22 @@ class GritLiveMqtt:
         self._reported_connection_state: bool | None = None
         self._state = _LifecycleState.STOPPED
         self._state_condition = threading.Condition()
+        self._warning_last_logged: dict[tuple[str, str], float] = {}
+
+    def _rate_limited_warning(
+        self,
+        reason: str,
+        device_type: str,
+        message: str,
+    ) -> None:
+        """Log at most one WARNING per reason/device_type every 10 minutes."""
+        key = (reason, device_type)
+        now = time.monotonic()
+        last = self._warning_last_logged.get(key)
+        if last is not None and now - last < _WARNING_RATE_LIMIT_SECONDS:
+            return
+        self._warning_last_logged[key] = now
+        _LOGGER.warning(message)
 
     @property
     def connected(self) -> bool:
@@ -549,9 +589,47 @@ class GritLiveMqtt:
             _LOGGER.warning("GRIT MQTT connection lost")
 
     def _on_message(self, client: Any, _userdata: Any, message: Any) -> None:
-        """Validate and pass a decoded MQTT message to the injected callback."""
+        """Validate topic first, then pass a decoded MQTT message onward."""
         if not self._client_is_connected(client):
             return
+
+        topic = getattr(message, "topic", None)
+        if not isinstance(topic, str) or len(topic) > MAX_MQTT_TOPIC_LENGTH:
+            _LOGGER.warning("GRIT MQTT message rejected: invalid topic")
+            return
+
+        parts = topic.split("/")
+        if not parts or parts[0] != "grit":
+            _LOGGER.warning("GRIT MQTT message rejected: invalid topic")
+            return
+        if any(
+            not part or len(part) > MAX_MQTT_TOPIC_COMPONENT_LENGTH
+            for part in parts
+        ):
+            _LOGGER.warning("GRIT MQTT message rejected: invalid topic")
+            return
+
+        topic_class = parts[2] if len(parts) >= 3 else ""
+        if topic_class in _NON_DEVICE_TOPIC_TYPES:
+            _LOGGER.debug(
+                "GRIT MQTT message ignored: non-device topic class"
+            )
+            return
+        if len(parts) < 5:
+            _LOGGER.debug(
+                "GRIT MQTT message ignored: topic structure not device-shaped"
+            )
+            return
+        if topic_class not in _ALLOWED_DEVICE_TYPES:
+            _LOGGER.debug(
+                "GRIT MQTT message ignored: device type not supported"
+            )
+            return
+
+        hub_id = parts[1]
+        device_type = topic_class
+        device_id = parts[3]
+        message_type = "/".join(parts[4:])
 
         raw_payload = getattr(message, "payload", None)
         if not isinstance(raw_payload, (bytes, bytearray, memoryview)):
@@ -571,7 +649,13 @@ class GritLiveMqtt:
         try:
             payload = json.loads(payload_text)
         except json.JSONDecodeError:
-            _LOGGER.warning("GRIT MQTT message rejected: invalid JSON")
+            # Hub id and device id are allowed in logs; never log payload text.
+            self._rate_limited_warning(
+                "invalid_json",
+                device_type,
+                "GRIT MQTT message rejected: invalid JSON on "
+                f"grit/{hub_id}/{device_type}/{device_id}/…",
+            )
             return
 
         if not isinstance(payload, dict):
@@ -583,28 +667,6 @@ class GritLiveMqtt:
                 "GRIT MQTT message rejected: no supported payload"
             )
             return
-
-        topic = getattr(message, "topic", None)
-        if not isinstance(topic, str) or len(topic) > MAX_MQTT_TOPIC_LENGTH:
-            _LOGGER.warning("GRIT MQTT message rejected: invalid topic")
-            return
-
-        parts = topic.split("/")
-        if (
-            len(parts) < 5
-            or parts[0] != "grit"
-            or any(
-                not part or len(part) > MAX_MQTT_TOPIC_COMPONENT_LENGTH
-                for part in parts
-            )
-        ):
-            _LOGGER.warning("GRIT MQTT message rejected: invalid topic")
-            return
-
-        hub_id = parts[1]
-        device_type = parts[2]
-        device_id = parts[3]
-        message_type = "/".join(parts[4:])
 
         if not self._client_is_connected(client):
             return

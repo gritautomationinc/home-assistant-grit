@@ -894,16 +894,98 @@ class GritLiveMqttTests(unittest.TestCase):
             FABRICATED_HOST,
             FABRICATED_USERNAME,
             FABRICATED_PASSWORD,
-            FABRICATED_TOPIC,
-            FABRICATED_HUB_ID,
-            FABRICATED_DEVICE_ID,
             payload_marker,
         ):
             with self.subTest(sensitive=sensitive):
                 self.assertNotIn(sensitive, output)
+        # Hub id and device id may appear in rate-limited topic warnings.
+        self.assertNotIn(FABRICATED_TOPIC, output)
         self.assertIn("GRIT MQTT connection established", output)
         self.assertIn("GRIT MQTT message rejected: invalid JSON", output)
         self.assertIn("GRIT MQTT connection lost", output)
+
+    def test_mesh_plain_text_frames_are_debug_not_warning(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client()
+        mesh_topic = f"grit/{FABRICATED_HUB_ID}/mesh/xtndr1/to"
+        frame = b"SENDWITHBSID 3 0 bsid [aa];"
+        with self.assertLogs(MQTT_MODULE._LOGGER, level="DEBUG") as captured:
+            with self._paho_patch(factory):
+                self.assertTrue(client.start())
+            fake = factory.instances[0]
+            self._connect_and_acknowledge(fake)
+            for _ in range(1000):
+                fake.on_message(
+                    fake,
+                    None,
+                    FakeMessage(frame, mesh_topic),
+                )
+            client.stop()
+
+        warnings = [
+            record
+            for record in captured.records
+            if record.levelno >= MQTT_MODULE.logging.WARNING
+        ]
+        self.assertEqual(warnings, [])
+        debugs = [
+            record
+            for record in captured.records
+            if "non-device topic class" in record.getMessage()
+        ]
+        self.assertEqual(len(debugs), 1000)
+
+    def test_hub_announce_short_topic_is_debug_not_warning(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client()
+        topic = f"grit/{FABRICATED_HUB_ID}/hub/a"
+        with self.assertLogs(MQTT_MODULE._LOGGER, level="DEBUG") as captured:
+            with self._paho_patch(factory):
+                self.assertTrue(client.start())
+            fake = factory.instances[0]
+            self._connect_and_acknowledge(fake)
+            fake.on_message(
+                fake,
+                None,
+                FakeMessage(b"{}", topic),
+            )
+            client.stop()
+
+        warnings = [
+            record
+            for record in captured.records
+            if record.levelno >= MQTT_MODULE.logging.WARNING
+            and "rejected: invalid topic" in record.getMessage()
+        ]
+        self.assertEqual(warnings, [])
+
+    def test_non_json_on_device_topic_is_rate_limited_warning(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client()
+        topic = f"grit/{FABRICATED_HUB_ID}/gate/{FABRICATED_DEVICE_ID}/sts"
+        with self.assertLogs(MQTT_MODULE._LOGGER, level="WARNING") as captured:
+            with self._paho_patch(factory):
+                self.assertTrue(client.start())
+            fake = factory.instances[0]
+            self._connect_and_acknowledge(fake)
+            for _ in range(5):
+                fake.on_message(
+                    fake,
+                    None,
+                    FakeMessage(b"not-json", topic),
+                )
+            client.stop()
+
+        matches = [
+            record
+            for record in captured.records
+            if "invalid JSON" in record.getMessage()
+        ]
+        self.assertEqual(len(matches), 1)
+        message = matches[0].getMessage()
+        self.assertIn(FABRICATED_HUB_ID, message)
+        self.assertIn(FABRICATED_DEVICE_ID, message)
+        self.assertNotIn("not-json", message)
 
 
 if __name__ == "__main__":
