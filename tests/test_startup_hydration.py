@@ -178,7 +178,7 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "gate",
                 "device-gate",
-                "mv",
+                "mv-d",
                 {"p": 65},
             )
         )

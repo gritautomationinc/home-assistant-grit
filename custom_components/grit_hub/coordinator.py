@@ -484,6 +484,13 @@ def _payload_state(
     updates: dict[str, Any] = {}
     root_message_type = message_type.split("/", 1)[0].lower()
 
+    # Command-echo topics that should not mutate device state. These frames can
+    # be retained/replayed by the broker and must not satisfy confirmations.
+    if device_type == "gate" and root_message_type == "mv":
+        return {}
+    if device_type in {"solenoid", "powerbank"} and root_message_type == "s":
+        return {}
+
     if device_type == "gate" and root_message_type != "req-tel":
         position = _first_valid(payload, ("p",), _gate_position)
         if position is _INVALID:

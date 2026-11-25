@@ -476,13 +476,57 @@ class CoordinatorMqttTests(unittest.TestCase):
                         instance,
                         device_type="solenoid",
                         device_id="device-switch",
-                        message_type="s",
+                        message_type="st",
                         payload={"state": raw},
                     )
                 )
                 self.assertIs(
                     self.mqtt_state(instance, "solenoid")["state"], expected
                 )
+
+    def test_gate_mv_command_echo_is_ignored(self):
+        instance = self.coordinator()
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="gate",
+                device_id="device-gate",
+                message_type="mv",
+                payload={"p": 65, "o": 1},
+            )
+        )
+        state = self.mqtt_state(instance, "gate")
+        self.assertNotIn("position", state)
+        self.assertNotIn("open", state)
+
+    def test_solenoid_and_powerbank_s_command_echo_is_ignored(self):
+        devices = _device_map()
+        devices["powerbank"] = [{"id": "device-powerbank"}]
+        instance = self.coordinator(devices=devices)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="solenoid",
+                device_id="device-switch",
+                message_type="s",
+                payload={"state": 1},
+            )
+        )
+        state = self.mqtt_state(instance, "solenoid")
+        self.assertNotIn("state", state)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="powerbank",
+                device_id="device-powerbank",
+                message_type="s",
+                payload={"state": 1},
+            )
+        )
+        state = self.mqtt_state(instance, "powerbank")
+        self.assertNotIn("state", state)
 
     def test_ambiguous_boolean_values_are_rejected(self):
         for raw in ("yes", "enabled", 2, -1, 0.0, None, [], {}):
@@ -493,7 +537,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                         instance,
                         device_type="solenoid",
                         device_id="device-switch",
-                        message_type="s",
+                        message_type="st",
                         payload={"s": raw},
                     )
                 )
@@ -821,7 +865,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance,
                 device_type="solenoid",
                 device_id="device-switch",
-                message_type="s",
+                message_type="st",
                 payload={"state": True},
             )
         )
