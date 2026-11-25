@@ -30,8 +30,12 @@ One `CoverEntity` with device class `gate` is created per discovered gate.
 After exact MQTT readiness, a bounded authenticated per-gate telemetry request
 waits for a fresh `/sts` or `/tel` response. Its compact `p` field may be a
 bounded number or numeric text and hydrates position/open state. `/req-tel` is a
-request marker, not gate state. Later `/mv`, `/mv-d`, `/p`, `/s`, and `/st`
-observations continue to update immediately. Open and close use the bounded REST
+request marker, not gate state. Hub command `/mv` is ignored as state and never
+updates the gate. Later device-originated `/mv-d`, `/p`, and `/st` observations
+continue to update immediately. Gate `/s` currently still updates open state
+through the same sanitized path when it carries a valid open, state, or `s`
+field or a usable position; that behaviour is unchanged here pending an owner
+decision relative to ADR 0001. Open and close use the bounded REST
 state route, capture the MQTT sequence before the command, and require a newer
 matching MQTT observation. There is no unproven REST gate-state fallback and no
 assumption that a retained MQTT status exists. A missing response leaves that

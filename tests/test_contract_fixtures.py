@@ -38,4 +38,3 @@ class TestHubV1_1_1197ContractFixtures(unittest.TestCase):
                     re.compile(r"^[^:]+:[0-9]+-[0-9]+$"),
                     "Expected __meta__.source in the form path/to/file:lineStart-lineEnd",
                 )
-

@@ -270,6 +270,14 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertFalse(entity.is_locked)
+        self.assertEqual(
+            instance.gritlock_evidence_source,
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
+        self.assertEqual(
+            entity.extra_state_attributes.get("evidence_source"),
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
 
         with (
             mock.patch.object(LOCK_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01),
@@ -284,6 +292,12 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(instance.gritlock_state)
         self.assertFalse(entity.is_locked)
         self.assertTrue(entity.available)
+        self.assertEqual(
+            entity.extra_state_attributes.get("unconfirmed_trigger_count"),
+            2,
+        )
+        self.assertNotIn("participants", entity.extra_state_attributes)
+        self.assertNotIn("trigger-one", repr(entity.extra_state_attributes))
 
     async def test_gl_frames_do_not_confirm_gritlock_state(self):
         devices = coordinator_tests._device_map()
