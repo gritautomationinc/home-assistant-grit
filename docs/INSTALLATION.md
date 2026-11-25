@@ -1,8 +1,8 @@
 # Installation
 
-GRIT Hub is an experimental Home Assistant custom integration. It is not in
-the default HACS catalogue. v0.1.2 is prepared after successful two-system live
-acceptance but is not yet tagged or published.
+GRIT Hub is an experimental Home Assistant custom integration. `v0.2.0` is the
+current release. It installs through HACS as a Custom Repository and is not in
+the default HACS catalogue.
 
 ## Before you begin
 
@@ -18,7 +18,7 @@ safety or security validation.
 ## HACS Custom Repository
 
 1. Open HACS and choose **Custom repositories**.
-2. Paste this repository's final GitHub URL.
+2. Paste `https://github.com/gritautomationinc/home-assistant-grit`.
 3. Choose **Integration** as the category.
 4. Add the repository, then install **GRIT Hub**.
 5. Restart Home Assistant.
