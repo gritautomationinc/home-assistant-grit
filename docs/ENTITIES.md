@@ -30,8 +30,12 @@ One `CoverEntity` with device class `gate` is created per discovered gate.
 After exact MQTT readiness, a bounded authenticated per-gate telemetry request
 waits for a fresh `/sts` or `/tel` response. Its compact `p` field may be a
 bounded number or numeric text and hydrates position/open state. `/req-tel` is a
-request marker, not gate state. Later `/mv`, `/mv-d`, `/p`, `/s`, and `/st`
-observations continue to update immediately. Open and close use the bounded REST
+request marker, not gate state. Hub command `/mv` is ignored as state and never
+updates the gate. Later device-originated `/mv-d`, `/p`, and `/st` observations
+continue to update immediately. Gate `/s` currently still updates open state
+through the same sanitized path when it carries a valid open, state, or `s`
+field or a usable position; that behaviour is unchanged here pending an owner
+decision relative to ADR 0001. Open and close use the bounded REST
 state route, capture the MQTT sequence before the command, and require a newer
 matching MQTT observation. There is no unproven REST gate-state fallback and no
 assumption that a retained MQTT status exists. A missing response leaves that
@@ -96,18 +100,19 @@ GRITLock refactor.
 
 ### RFID reader
 
-One `LockEntity` is created per uniquely identified RFID reader. The strict
-boolean `state` from `GET /api/rfid/{id}` is authoritative:
+One `LockEntity` is created per uniquely identified RFID reader. The lock state
+is the Hub's in-memory observation exposed through the strict boolean `state`
+from `GET /api/rfid/{id}`:
 
 - `true` means enabled/unlocked;
 - `false` means disabled/locked.
 
-Lock sends REST state `false`; Unlock sends REST state `true`. Confirmation
-requires a newer matching individual detail read. Collection `state` and
-`lockout` are not used as lock state. RFID MQTT `sts` is diagnostic-only, while
-exact `s` and `st` types invalidate the cached state and schedule a bounded,
-debounced individual REST refresh; their payload values do not determine the
-lock state.
+Unknown means the Hub has not observed that reader's state since the Hub process
+started. Lock sends REST state `false`; Unlock sends REST state `true`.
+Confirmation requires a newer matching individual detail read. Collection
+`state` and `lockout` are not used as lock state. Exact MQTT `s`, `st`, and
+`sts` types invalidate the cached state and schedule a bounded, debounced
+individual REST refresh; their payload values do not determine the lock state.
 
 An explicitly offline reader is unavailable. A temporary failed read preserves
 the last valid state internally without inventing a new one. No signed-in user,
@@ -149,10 +154,12 @@ than an assumed state.
 | Entity | Category | Behavior and limitations |
 | --- | --- | --- |
 | Refresh All | Configuration | Requests an immediate coordinator refresh; no device command |
-| Restart GRIT Service | Configuration | Calls the bounded GRIT service restart route |
-| Reboot Hub | Configuration; disabled by default | Reboots the physical hub; enable and use only with explicit site authorization |
 | Device Refresh | Configuration, per device | Calls the bounded device refresh route, then refreshes coordinator state |
 | Device Locate | Configuration, per device | Calls the bounded locate route and may cause physical device activity |
+
+Restart GRIT Service and Reboot Hub buttons were removed in v0.2.0. Those Hub
+routes require a human admin session and always return 403 for API tokens. On
+upgrade, their entity registry entries are deleted during setup.
 
 ## Binary sensors
 
@@ -180,11 +187,20 @@ supported value exists:
 
 - **MQTT RSSI** — signal strength in dBm;
 - **MQTT Firmware** — bounded firmware text;
-- **MQTT Last Received** — timestamp of the last accepted sanitized message.
+- **MQTT Last Received** — UTC timestamp of the last accepted device MQTT
+  message for that device. Every accepted device message updates it. While MQTT
+  is connected the entity stays available; a missing value means never seen
+  this session (unknown), not unavailable.
 
 Entity attributes are limited to the integration's small scalar allowlist; raw
 REST objects, raw MQTT payloads, complete topics, and error responses are not
 exposed.
+
+## Device removal
+
+Stale devices that are absent from the last successful complete Hub inventory
+may be removed manually in Home Assistant. Devices still present in that
+inventory cannot be removed. There is no automatic prune option.
 
 ## Services
 

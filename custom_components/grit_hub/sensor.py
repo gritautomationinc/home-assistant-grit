@@ -6,7 +6,7 @@ from datetime import datetime
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 
-from .api import obj_id, obj_name
+from .api import obj_id
 from .const import DEVICE_TYPES, DOMAIN, SENSOR_DEVICE_TYPES
 from .entity import GritHubEntity
 
@@ -109,7 +109,7 @@ class GritHubGenericDeviceSensor(GritHubEntity, SensorEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}_status"
-        self._attr_name = f"{obj_name(device, device_type.title())} Status"
+        self._attr_name = "Status"
 
     @property
     def native_value(self):
@@ -193,4 +193,9 @@ class GritHubMqttLastReceivedSensor(GritHubEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.native_value is not None
+        # Remain available while MQTT is up so "never seen this session" is
+        # distinct (unknown) from broker/coordinator unavailability.
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.mqtt_connected
+        )

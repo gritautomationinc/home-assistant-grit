@@ -425,11 +425,10 @@ class ConfigFlowMqttTests(unittest.TestCase):
 
     def complete_discovered(self):
         flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(self.probe_calls, [])
         result = _run_immediate(
-            flow.async_step_confirm(
-                {FLOW_MODULE._CONF_SHOW_ADVANCED: False}
-            )
+            flow.async_step_advanced(self.advanced_input())
         )
         return flow, result
 
@@ -513,20 +512,12 @@ class ConfigFlowMqttTests(unittest.TestCase):
             TextSelectorType.PASSWORD,
         )
 
-    def test_successful_rest_discovery_is_confirmed_then_stored(self):
+    def test_successful_rest_discovery_requires_explicit_credentials(self):
         flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "confirm")
-        self.assertEqual(
-            result["description_placeholders"],
-            {
-                "mqtt_host": FABRICATED_MQTT_HOST,
-                "mqtt_hub_id": FABRICATED_HUB_ID,
-            },
-        )
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(self.probe_calls, [])
         result = _run_immediate(
-            flow.async_step_confirm(
-                {FLOW_MODULE._CONF_SHOW_ADVANCED: False}
-            )
+            flow.async_step_advanced(self.advanced_input())
         )
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(
@@ -537,16 +528,39 @@ class ConfigFlowMqttTests(unittest.TestCase):
             result["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
             FABRICATED_HUB_ID,
         )
-        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_USERNAME])
-        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
-        self.assertNotIn(FLOW_MODULE.DEFAULT_MQTT_USERNAME, repr(result))
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_USERNAME],
+            FABRICATED_USERNAME,
+        )
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD],
+            FABRICATED_PASSWORD,
+        )
+        self.assertNotIn("grit-readonly", repr(result))
+        self.assertEqual(len(self.probe_calls), 1)
+        self.assertEqual(self.probe_calls[0]["username"], FABRICATED_USERNAME)
+        self.assertEqual(self.probe_calls[0]["password"], FABRICATED_PASSWORD)
+
+    def test_new_install_rejects_missing_mqtt_credentials(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "advanced")
+        values = self.advanced_input()
+        values[FLOW_MODULE.CONF_MQTT_USERNAME] = ""
+        values[FLOW_MODULE.CONF_MQTT_PASSWORD] = ""
+        result = _run_immediate(flow.async_step_advanced(values))
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(
+            result["errors"].get(FLOW_MODULE.CONF_MQTT_USERNAME),
+            "mqtt_credentials_required",
+        )
+        self.assertEqual(self.probe_calls, [])
 
     def test_long_legacy_token_reaches_authenticated_hub_validation(self):
         flow, result = self.submit_api(
             {FLOW_MODULE.CONF_TOKEN: FABRICATED_LEGACY_TOKEN}
         )
 
-        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(result["step_id"], "advanced")
         self.assertEqual(
             FakeApi.constructor_tokens,
             [FABRICATED_LEGACY_TOKEN],
@@ -619,7 +633,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
 
     def test_failed_retry_clears_prior_authenticated_discovery_state(self):
         flow, first = self.submit_api()
-        self.assertEqual(first["step_id"], "confirm")
+        self.assertEqual(first["step_id"], "advanced")
         self.assertIsNotNone(flow._pending_api)
         initial_probe_count = len(self.probe_calls)
 
@@ -632,8 +646,8 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertIsNone(flow._pending_api)
         self.assertEqual(flow._advanced_defaults, {})
         self.assertEqual(len(self.probe_calls), initial_probe_count)
-        confirm = _run_immediate(flow.async_step_confirm())
-        self.assertEqual(confirm["step_id"], "user")
+        redirected = _run_immediate(flow.async_step_confirm())
+        self.assertEqual(redirected["step_id"], "user")
         self.assertEqual(flow.created_entries, [])
 
     def test_missing_or_malformed_hub_id_uses_advanced_without_probe(self):
@@ -689,12 +703,12 @@ class ConfigFlowMqttTests(unittest.TestCase):
                 for private_value in (
                     FABRICATED_TOKEN,
                     FABRICATED_HUB_ID,
-                    FLOW_MODULE.DEFAULT_MQTT_USERNAME,
-                    FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+                    "grit-readonly",
+                    "grit-readonly",
                 ):
                     self.assertNotIn(private_value, rendered)
 
-    def test_broker_entry_validates_defaults_and_completes_setup(self):
+    def test_broker_entry_collects_credentials_before_probe(self):
         flow, _result = self.broker_fallback()
 
         with self.assertNoLogs(level=logging.DEBUG):
@@ -704,39 +718,24 @@ class ConfigFlowMqttTests(unittest.TestCase):
                 )
             )
 
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(self.probe_calls, [])
+        self.assertEqual(
+            flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_HOST],
+            FABRICATED_MQTT_HOST,
+        )
+        result = _run_immediate(
+            flow.async_step_advanced(self.advanced_input())
+        )
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(len(self.probe_calls), 1)
         probe = self.probe_calls[0]
         self.assertEqual(probe["host"], FABRICATED_MQTT_HOST)
-        self.assertEqual(probe["port"], FLOW_MODULE.DEFAULT_MQTT_PORT)
-        self.assertEqual(probe["expected_hub_id"], FABRICATED_HUB_ID)
+        self.assertEqual(probe["username"], FABRICATED_USERNAME)
+        self.assertEqual(probe["password"], FABRICATED_PASSWORD)
         self.assertEqual(
-            probe["username"], FLOW_MODULE.DEFAULT_MQTT_USERNAME
-        )
-        self.assertEqual(
-            probe["password"], FLOW_MODULE.DEFAULT_MQTT_PASSWORD
-        )
-        self.assertEqual(
-            probe["timeout"], FLOW_MODULE.MQTT_DISCOVERY_TIMEOUT
-        )
-        self.assertFalse(probe["use_tls"])
-        self.assertTrue(probe["verify_tls"])
-        self.assertEqual(
-            probe["keepalive"], FLOW_MODULE.DEFAULT_MQTT_KEEPALIVE
-        )
-        self.assertEqual(
-            result["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
-            FABRICATED_HUB_ID,
-        )
-        self.assertEqual(
-            result["data"][FLOW_MODULE.CONF_MQTT_HOST],
-            FABRICATED_MQTT_HOST,
-        )
-        self.assertIsNone(
-            result["data"][FLOW_MODULE.CONF_MQTT_USERNAME]
-        )
-        self.assertIsNone(
-            result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD]
+            result["data"][FLOW_MODULE.CONF_MQTT_USERNAME],
+            FABRICATED_USERNAME,
         )
 
     def test_malformed_broker_fails_before_probe(self):
@@ -761,33 +760,22 @@ class ConfigFlowMqttTests(unittest.TestCase):
                 self.assertEqual(self.probe_calls, [])
                 self.assertEqual(flow.created_entries, [])
 
-    def test_failed_broker_validation_is_generic_and_opens_advanced(self):
+    def test_failed_broker_host_stays_on_broker_form(self):
         flow, _result = self.broker_fallback()
-        self.probe_result = types.SimpleNamespace(
-            connected=False,
-            hub_id=None,
-            ambiguous=False,
+
+        result = _run_immediate(
+            flow.async_step_mqtt_broker(
+                {FLOW_MODULE.CONF_MQTT_HOST: "invalid broker"}
+            )
         )
 
-        with self.assertNoLogs(level=logging.DEBUG):
-            result = _run_immediate(
-                flow.async_step_mqtt_broker(
-                    {FLOW_MODULE.CONF_MQTT_HOST: FABRICATED_MQTT_HOST}
-                )
-            )
-
-        self.assertEqual(result["step_id"], "advanced")
-        self.assertEqual(result["errors"], {"base": "mqtt_cannot_connect"})
+        self.assertEqual(result["step_id"], "mqtt_broker")
+        self.assertEqual(
+            result["errors"],
+            {FLOW_MODULE.CONF_MQTT_HOST: "invalid_mqtt_host"},
+        )
+        self.assertEqual(self.probe_calls, [])
         self.assertEqual(flow.created_entries, [])
-        for private_value in (
-            FABRICATED_TOKEN,
-            FABRICATED_PASSWORD,
-            FABRICATED_HUB_ID,
-            FABRICATED_MQTT_HOST,
-            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
-            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
-        ):
-            self.assertNotIn(private_value, repr(result["errors"]))
 
     def test_advanced_fallback_contains_no_api_or_mqtt_secret(self):
         FakeApi.hub_values = {"name": "Fabricated Hub"}
@@ -798,19 +786,15 @@ class ConfigFlowMqttTests(unittest.TestCase):
         rendered = repr(result)
         for secret in (
             FABRICATED_TOKEN,
-            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
-            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+            "grit-readonly",
+            "grit-readonly",
         ):
             self.assertNotIn(secret, rendered)
 
-    def test_mqtt_timeout_is_bounded_and_shows_manual_fallback(self):
+    def test_discovery_without_credentials_opens_advanced_without_probe(self):
         _flow, result = self.manual_flow()
         self.assertEqual(result["step_id"], "advanced")
-        self.assertEqual(len(self.probe_calls), 1)
-        self.assertEqual(
-            self.probe_calls[0]["timeout"],
-            FLOW_MODULE.MQTT_DISCOVERY_TIMEOUT,
-        )
+        self.assertEqual(self.probe_calls, [])
 
     def test_manual_fallback_creates_complete_entry(self):
         flow, _result = self.manual_flow()
@@ -822,12 +806,6 @@ class ConfigFlowMqttTests(unittest.TestCase):
 
     def test_advanced_overrides_replace_discovered_values(self):
         flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "confirm")
-        result = _run_immediate(
-            flow.async_step_confirm(
-                {FLOW_MODULE._CONF_SHOW_ADVANCED: True}
-            )
-        )
         self.assertEqual(result["step_id"], "advanced")
         fields = _schema_fields(result["data_schema"])
         self.assertEqual(
@@ -857,30 +835,24 @@ class ConfigFlowMqttTests(unittest.TestCase):
 
         _flow, result = self.submit_api()
 
-        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(result["step_id"], "advanced")
         self.assertEqual(FakeApi.health_calls, 0)
         self.assertEqual(FakeApi.hub_calls, 1)
 
-    def test_discovery_performs_one_read_sequence_and_one_probe(self):
+    def test_discovery_reads_hub_then_waits_for_credentials(self):
         flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(result["step_id"], "advanced")
         self.assertEqual(FakeApi.read_events, ["hub"])
         self.assertEqual(FakeApi.health_calls, 0)
-        self.assertEqual(len(self.probe_calls), 1)
-        self.assertEqual(len(flow.hass.executor_calls), 1)
-        self.assertEqual(
-            self.probe_calls[0]["username"],
-            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
-        )
-        self.assertEqual(
-            self.probe_calls[0]["password"],
-            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
-        )
+        self.assertEqual(self.probe_calls, [])
+        self.assertEqual(len(flow.hass.executor_calls), 0)
 
-    def test_cancelled_discovery_signals_executor_probe_cleanup(self):
+    def test_cancelled_advanced_probe_signals_executor_cleanup(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "advanced")
         self.probe_error = asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
-            self.submit_api()
+            _run_immediate(flow.async_step_advanced(self.advanced_input()))
         self.assertEqual(len(self.probe_calls), 1)
         self.assertTrue(self.probe_calls[0]["cancel_event"].is_set())
 
@@ -972,14 +944,18 @@ class ConfigFlowMqttTests(unittest.TestCase):
             },
         )
 
-    def test_blank_username_and_password_normalize_to_none(self):
+    def test_blank_username_and_password_are_rejected_for_new_installs(self):
         flow, _result = self.manual_flow()
         values = self.advanced_input()
         values[FLOW_MODULE.CONF_MQTT_USERNAME] = " "
         values[FLOW_MODULE.CONF_MQTT_PASSWORD] = " "
         result = _run_immediate(flow.async_step_advanced(values))
-        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_USERNAME])
-        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(
+            result["errors"].get(FLOW_MODULE.CONF_MQTT_USERNAME),
+            "mqtt_credentials_required",
+        )
+        self.assertEqual(self.probe_calls, [])
 
     def test_tls_verification_is_safely_normalized(self):
         flow, _result = self.manual_flow()
@@ -1130,29 +1106,35 @@ class ConfigFlowMqttTests(unittest.TestCase):
             entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD], new_password
         )
 
-    def test_changing_username_without_password_clears_old_password(self):
+    def test_changing_username_without_password_is_rejected(self):
         entry = self.existing_entry()
         user_input = self.reconfigure_input(entry)
         user_input[FLOW_MODULE.CONF_MQTT_USERNAME] = (
             "fabricated-replacement-user"
         )
         _flow, result = self.reconfigure(entry, user_input)
-        self.assertEqual(result["reason"], "reconfigure_successful")
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(
+            result["errors"].get(FLOW_MODULE.CONF_MQTT_PASSWORD),
+            "mqtt_credentials_required",
+        )
         self.assertEqual(
             entry.data[FLOW_MODULE.CONF_MQTT_USERNAME],
-            "fabricated-replacement-user",
+            FABRICATED_USERNAME,
         )
-        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD])
 
-    def test_clearing_username_also_clears_password(self):
+    def test_clearing_username_and_password_is_rejected(self):
         entry = self.existing_entry()
         user_input = self.reconfigure_input(entry)
         user_input[FLOW_MODULE.CONF_MQTT_USERNAME] = " "
         user_input[FLOW_MODULE.CONF_MQTT_PASSWORD] = " "
         _flow, result = self.reconfigure(entry, user_input)
-        self.assertEqual(result["reason"], "reconfigure_successful")
-        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_USERNAME])
-        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD])
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertIn("mqtt_credentials_required", result["errors"].values())
+        self.assertEqual(
+            entry.data[FLOW_MODULE.CONF_MQTT_USERNAME],
+            FABRICATED_USERNAME,
+        )
 
     def test_reconfigure_updates_existing_entry_without_duplicate(self):
         entry = self.existing_entry()
