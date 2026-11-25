@@ -196,8 +196,8 @@ class DocumentationTests(unittest.TestCase):
         self,
     ) -> None:
         final_url = (
-            "https://github.com/GoDeeGo-Productions/"
-            "home-assistant-grit-hub"
+            "https://github.com/gritautomationinc/"
+            "home-assistant-grit"
         )
         release_url = f"{final_url}/releases/tag/v0.1.0"
         release_commit = "9464dbab1798cae3b2d0f538d0db3ed64d510884"
@@ -227,7 +227,9 @@ class DocumentationTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("Copyright (c) 2026 GoDeeGo Productions", license_text)
+        self.assertIn(
+            "Copyright (c) 2026 GRIT Automation, Inc.", license_text
+        )
         self.assertIn(
             "GitHub Private Vulnerability Reporting", security_flat
         )
@@ -327,8 +329,6 @@ class DocumentationTests(unittest.TestCase):
             installation,
             agents,
         ):
-            self.assertIn("GoDeeGo Productions", document)
-            self.assertIn("GoDeeGo-Productions", document)
             self.assertIn(final_url, document)
         self.assertEqual(manifest["documentation"], final_url)
         self.assertEqual(manifest["issue_tracker"], f"{final_url}/issues")

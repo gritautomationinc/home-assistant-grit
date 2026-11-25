@@ -25,10 +25,9 @@ safety or security validation.
 6. Open **Settings > Devices & services > Add integration** and select
    **GRIT Hub**.
 
-The repository has been transferred to GoDeeGo Productions and its verified
-final URL is
-`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`. Use that exact
-URL and verify it in the browser before trusting an archive or installation.
+The canonical repository URL is `https://github.com/gritautomationinc/home-assistant-grit`.
+Use that exact URL and verify it in the browser before trusting an archive or
+installation.
 
 ## Manual installation
 

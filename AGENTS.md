@@ -38,8 +38,8 @@ repository.
 
 ## Initial release target
 
-- Owner: GoDeeGo Productions
-- Repository: `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
+- Owner: GRIT Automation, Inc.
+- Repository: `https://github.com/gritautomationinc/home-assistant-grit`
 - Integration domain: `grit_hub`
 - Distribution: HACS custom repository
 - Initial version: `0.1.0`

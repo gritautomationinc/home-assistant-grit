@@ -111,17 +111,18 @@ Custom Repository:
 
 1. In HACS, open **Custom repositories**.
 2. Paste the verified final repository URL:
-   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`.
+   `https://github.com/gritautomationinc/home-assistant-grit`.
 3. Select **Integration** as the category.
 4. Add the repository and install **GRIT Hub**.
 5. Restart Home Assistant.
 6. Go to **Settings > Devices & services > Add integration** and choose
    **GRIT Hub**.
 
-The repository transfer to GoDeeGo Productions and the final URL are verified.
-`v0.2.0` is prepared in-tree and has not yet been tagged or published. See the
-full [Installation guide](docs/INSTALLATION.md) and
-[Compatibility](docs/COMPATIBILITY.md).
+The canonical repository URL is verified.
+[`v0.1.1`](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.1)
+is the latest published release. `v0.2.0` is prepared in-tree and has not yet
+been tagged or published. See the full [Installation guide](docs/INSTALLATION.md)
+and [Compatibility](docs/COMPATIBILITY.md).
 
 ## Manual installation
 

@@ -73,7 +73,7 @@ Not tagged or published yet.
   Empty, incomplete, contradictory, stale, overflowing, timed-out, or unsettled
   generations continue to fail closed.
 
-Released as [GRIT Hub for Home Assistant v0.1.1](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
+Released as [GRIT Hub for Home Assistant v0.1.1](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.1)
 on 2026-08-05. The release passed the all-`gte=0` installation but exposed a
 mixed-installation regression and is superseded by v0.1.2.
 
@@ -118,5 +118,5 @@ mixed-installation regression and is superseded by v0.1.2.
 - Redirect refusal for bearer-authenticated requests and diagnostics.
 - No arbitrary HTTP endpoint service and no MQTT publishing.
 
-Released as [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+Released as [GRIT Hub for Home Assistant v0.1.0](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.0)
 on 2026-08-04.
