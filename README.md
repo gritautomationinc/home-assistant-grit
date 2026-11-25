@@ -7,11 +7,10 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
-> **Release status:** `v0.1.2` is the latest prepared release and is ready for
-> publication after successful two-system live acceptance. It is not yet tagged
-> or published. The published `v0.1.1` release is superseded but remains the
-> latest published release until v0.1.2 publication. This project remains a HACS
-> Custom Repository and is not a default-catalogue listing.
+> **Release status:** `v0.2.0` is the latest prepared release (manifest and
+> changelog ready). It is not yet tagged or published. Earlier `v0.1.x` releases
+> remain historical. This project remains a HACS Custom Repository and is not a
+> default-catalogue listing.
 
 This project is experimental, provided as-is, and is not affiliated with,
 endorsed by, or supported by GRIT or GRIT Automation.
@@ -28,10 +27,9 @@ endorsed by, or supported by GRIT or GRIT Automation.
   updates, and post-command MQTT confirmation.
 - One RFID lock entity per reader, using authoritative individual REST state and
   event-driven MQTT invalidation refresh.
-- One system-wide GRITLock entity using one continuous bounded MQTT observed-
-  state channel. `gls=1` means locked and `gls=0` means unlocked. Live `/gl`
-  bursts use their fresh `gte=1` subset, or all fresh observations when every
-  `gte=0`; REST never supplies displayed state or redefines a live burst.
+- One system-wide GRITLock entity using device-originated `gl-d` evidence and a
+  labelled REST seed when needed. Availability fails open while confirmation
+  fails closed.
 - Collector, solenoid, latch, and powerbank switches, with deterministic
   individual-detail confirmation for collectors.
 - Hub connectivity, software, device-count, MQTT, and per-device diagnostics.
@@ -114,10 +112,9 @@ Custom Repository:
    **GRIT Hub**.
 
 The repository transfer to GoDeeGo Productions and the final URL are verified.
-[`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
-is the latest published release. v0.1.2 is prepared after successful two-system
-live acceptance but has not yet been tagged or published. See the full
-[Installation guide](docs/INSTALLATION.md).
+`v0.2.0` is prepared in-tree and has not yet been tagged or published. See the
+full [Installation guide](docs/INSTALLATION.md) and
+[Compatibility](docs/COMPATIBILITY.md).
 
 ## Manual installation
 
@@ -136,30 +133,32 @@ The normal first page asks only for:
 - whether to verify the API TLS certificate.
 
 Setup authenticates with `GET /api/hub`, retains its documented 32-character
-hub ID, and uses a valid returned Ethernet address as the MQTT broker. If no
-usable address is returned, setup asks only for the missing LAN hostname or IP
-address. It retains internal defaults: port `1883`, TLS off, certificate
-verification on where applicable, keepalive `60`, default REST interval `30`,
-and the provisional vendor-default read-only MQTT credentials.
+hub ID, and uses a valid returned Ethernet address as the MQTT broker when
+available. It then requires the Hub's per-hub read-only MQTT username and
+password. Setup does not ship or probe with a shared built-in MQTT password.
+Internal defaults remain port `1883`, TLS off, certificate verification on where
+applicable, keepalive `60`, and REST interval `30`.
 
 MQTT readiness requires connection, a successful subscribe call, and the exact
 matching successful SUBACK for `grit/<hub-id>/+/+/#`. Setup never publishes,
-scans the network, or creates the entry before validation succeeds. Advanced
+scans the network, or creates the entry before validation succeeds. MQTT
 settings provide broker, topic hub ID, credentials, TLS, keepalive, and polling
 overrides. The API token and MQTT password remain secret fields.
+
+Existing pre-0.2.0 entries that still rely on the legacy shared MQTT credential
+keep connecting and raise a Home Assistant repair issue prompting reconfigure.
 
 ## Documentation
 
 - [Installation and removal](docs/INSTALLATION.md)
+- [Compatibility](docs/COMPATIBILITY.md)
 - [Entity reference](docs/ENTITIES.md)
 - [Architecture and state authority](docs/ARCHITECTURE.md)
 - [Troubleshooting and safe log redaction](docs/TROUBLESHOOTING.md)
-- [v0.1.2 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.2.md)
-- [v0.1.2 release checklist](docs/RELEASE_CHECKLIST_v0.1.2.md)
-- [Superseded v0.1.1 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.1.md)
-- [Superseded v0.1.1 patch-release checklist](docs/RELEASE_CHECKLIST_v0.1.1.md)
-- [Historical v0.1.0 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.0.md)
-- [Historical v0.1.0 release checklist](docs/RELEASE_CHECKLIST.md)
+- [v0.2.0 acceptance report (prepared)](docs/ACCEPTANCE_REPORT_v0.2.0.md)
+- [v0.2.0 release checklist (prepared)](docs/RELEASE_CHECKLIST_v0.2.0.md)
+- [Historical v0.1.2 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.2.md)
+- [Historical v0.1.2 release checklist](docs/RELEASE_CHECKLIST_v0.1.2.md)
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
@@ -169,14 +168,15 @@ overrides. The API token and MQTT password remain secret fields.
 - This is an experimental custom integration, not Home Assistant Core and not a
   default HACS catalogue entry.
 - Direct MQTT readiness is mandatory; REST-only operation is not supported.
-- The provisional read-only MQTT defaults are pending confirmation from GRIT's
-  author. Installations that differ must use Advanced overrides.
+- New installs require the Hub's per-hub read-only MQTT credential; there is no
+  built-in shared password.
 - MQTT is QoS 0 and has no per-device staleness timer.
 - A hub-level GRITLock change may occasionally fail to propagate to an individual
-  downstream trigger. That separate propagation-reliability issue is outside
-  v0.1.2 and is not treated as corrected by this release.
+  downstream trigger. That separate propagation-reliability issue remains outside
+  this release's confirmation model.
 - One config entry represents one API and MQTT hub identity; multi-hub behavior
   has not been broadly validated.
+- Stale devices can be removed manually; there is no automatic prune.
 - Dynamic device entity addition and removal requires an integration reload.
 - Gate state has no unproven REST fallback. Startup waits for a fresh requested
   MQTT status response, but a missing device does not erase state already

@@ -3,6 +3,48 @@
 All notable project changes are recorded here. This project uses semantic
 versioning for public releases.
 
+## 0.2.0 — prepared
+
+Prepared release for GRIT Hub v1.1.1197 compatibility and safe state authority.
+Not tagged or published yet.
+
+### Finding → ticket map
+
+| Finding | Ticket | Change |
+| --- | --- | --- |
+| F1 | T4 | GRITLock confirms only on device-originated `gl-d` |
+| F2 | T6 | Gate `mv` and switch `s` command echoes ignored (`return {}`) |
+| F3 | T5 | GRITLock stays available when unknown; REST seed; late `sts` |
+| F4 | T8 | `device_command` uses POST execute |
+| F5 | T7 | Path-segment hardening before HTTP |
+| F6 | T9 | Options flow no longer assigns read-only `config_entry` |
+| F7 | T11 | Manual stale-device removal; no auto-prune; no MQTT re-append |
+| F9 | T12 | MQTT topic gate before JSON parse |
+| F10 | T13 | RFID `sts` refresh; `last_received` on every accepted message |
+| F11 | T10 | Restart/Reboot buttons removed |
+| F12 | T14 | Lockout 502/409 semantics |
+| F13 | T15 | Health-check 503 vs 404 fallback |
+| F14 | T16 | Primary entity naming without doubled object ids |
+| F15 | T16 | Consistent `bool_state` for dict/string shapes |
+| F16 | T17 | Hub version repair (warn); `iot_class` local_push; paho pin |
+| F18 | T20 | Stop shipping default MQTT password; legacy repair issue |
+
+### Added
+
+- Home Assistant repair issues for legacy shared MQTT credentials and unverified
+  Hub software versions.
+- Manual device removal via `async_remove_config_entry_device` when absent from
+  the last complete Hub inventory.
+- Compatibility documentation for Hub `v1.1.1197` and HA `2026.11.1`.
+
+### Changed
+
+- Manifest version `0.2.0`, `iot_class` `local_push`,
+  `requirements` `paho-mqtt>=2.1.0,<3`.
+- New installs require explicit per-hub MQTT username and password.
+- RFID exact `s` / `st` / `sts` schedule coalesced REST refresh.
+- MQTT Last Received stays available while connected (never-seen is unknown).
+
 ## 0.1.2 — 2026-08-06
 
 ### Fixed
