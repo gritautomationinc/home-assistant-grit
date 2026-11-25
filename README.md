@@ -17,10 +17,9 @@ Issues and pull requests are welcome, but may not be answered.
 
 See [LICENSE](LICENSE) for the full warranty disclaimer.
 
-> **Release status:** `v0.2.0` is the latest prepared release (manifest and
-> changelog ready). It is not yet tagged or published. Earlier `v0.1.x` releases
-> remain historical. This project remains a HACS Custom Repository and is not a
-> default-catalogue listing.
+> **Release status:** `v0.2.0` is the current release. Earlier `v0.1.x`
+> versions remain historical. This project remains a HACS Custom Repository
+> and is not a default-catalogue listing.
 
 > [!CAUTION]
 > GRIT equipment can operate gates and physical access-control devices. This
@@ -118,11 +117,10 @@ Custom Repository:
 6. Go to **Settings > Devices & services > Add integration** and choose
    **GRIT Hub**.
 
-The canonical repository URL is verified.
-[`v0.1.1`](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.1)
-is the latest published release. `v0.2.0` is prepared in-tree and has not yet
-been tagged or published. See the full [Installation guide](docs/INSTALLATION.md)
-and [Compatibility](docs/COMPATIBILITY.md).
+The canonical repository URL is verified. See the
+[`v0.2.0` release](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.2.0),
+the full [Installation guide](docs/INSTALLATION.md), and
+[Compatibility](docs/COMPATIBILITY.md).
 
 ## Manual installation
 
@@ -163,8 +161,8 @@ keep connecting and raise a Home Assistant repair issue prompting reconfigure.
 - [Entity reference](docs/ENTITIES.md)
 - [Architecture and state authority](docs/ARCHITECTURE.md)
 - [Troubleshooting and safe log redaction](docs/TROUBLESHOOTING.md)
-- [v0.2.0 acceptance report (prepared)](docs/ACCEPTANCE_REPORT_v0.2.0.md)
-- [v0.2.0 release checklist (prepared)](docs/RELEASE_CHECKLIST_v0.2.0.md)
+- [v0.2.0 acceptance report](docs/ACCEPTANCE_REPORT_v0.2.0.md)
+- [v0.2.0 release checklist](docs/RELEASE_CHECKLIST_v0.2.0.md)
 - [Historical v0.1.2 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.2.md)
 - [Historical v0.1.2 release checklist](docs/RELEASE_CHECKLIST_v0.1.2.md)
 - [Changelog](CHANGELOG.md)

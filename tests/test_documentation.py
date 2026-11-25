@@ -135,13 +135,13 @@ class DocumentationTests(unittest.TestCase):
         self.assertEqual(manifest["iot_class"], "local_push")
         self.assertEqual(manifest["requirements"], ["paho-mqtt>=2.1.0,<3"])
         self.assertIn(
-            "`v0.2.0` is the latest prepared release",
+            "`v0.2.0` is the current release",
             readme_flat,
         )
-        self.assertIn("It is not yet tagged or published", readme_flat)
+        self.assertIn("releases/tag/v0.2.0", readme)
         self.assertIn("remains a HACS Custom Repository", readme_flat)
 
-        self.assertIn("## 0.2.0 — prepared", changelog)
+        self.assertIn("## 0.2.0 — 2026-11-25", changelog)
         self.assertIn("## 0.1.2 — 2026-08-06", changelog)
         self.assertNotIn("## Unreleased", changelog)
         for expected in (
@@ -153,10 +153,7 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn(expected, changelog)
 
         self.assertIn("manifest is prepared at version `0.2.0`", acceptance_v020)
-        self.assertIn(
-            "No `v0.2.0` tag or GitHub release exists yet",
-            " ".join(acceptance_v020.split()),
-        )
+        self.assertIn("pre-release preparation", acceptance_v020)
         self.assertIn("Manifest version is exactly `0.2.0`", checklist_v020)
         self.assertIn("v1.1.1197", compatibility)
         self.assertIn("2026.11.1", compatibility)
@@ -179,11 +176,8 @@ class DocumentationTests(unittest.TestCase):
             )
         )
         for false_claim in (
-            "v0.2.0 was published",
-            "v0.2.0 has been published",
             "- [x] `v0.2.0` tag pushed",
             "- [x] GitHub release `v0.2.0` created",
-            "releases/tag/v0.2.0",
             "v0.1.2 was published",
             "v0.1.2 has been published",
             "- [x] `v0.1.2` tag pushed",

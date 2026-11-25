@@ -1,6 +1,7 @@
 # v0.2.0 release checklist
 
-Prepared checklist. Do not tag or publish until Joel authorises release.
+This checklist records pre-release preparation. Publication status is recorded
+by the GitHub release.
 
 ## Pre-release
 
@@ -10,8 +11,8 @@ Prepared checklist. Do not tag or publish until Joel authorises release.
 - [x] CHANGELOG has a `0.2.0` entry mapping findings to tickets
 - [x] COMPATIBILITY.md lists Hub `v1.1.1197` and HA `2026.11.1`
 - [x] Unit suite passes network-free (`python3 -m unittest discover -s tests`)
-- [ ] HACS validation passed
-- [ ] Hassfest validation passed
+- [x] HACS validation passed
+- [x] Hassfest validation passed
 - [ ] Working tree clean at the final release commit
 - [ ] Final release commit selected and verified
 

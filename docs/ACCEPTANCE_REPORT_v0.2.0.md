@@ -1,7 +1,7 @@
 # v0.2.0 acceptance report
 
-Prepared report for integration release `0.2.0`. **Not published.** No
-`v0.2.0` tag or GitHub release exists yet.
+This report records pre-release preparation for integration `0.2.0`.
+Publication status is recorded by the GitHub tag and release.
 
 ## Scope
 
