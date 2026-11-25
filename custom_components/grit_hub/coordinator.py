@@ -920,6 +920,37 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return True
 
+    def _touch_device_mqtt_last_received(
+        self,
+        *,
+        devices: dict[str, Any],
+        collection: list[Any],
+        device_type: str,
+        matches: list[tuple[int, dict[str, Any]]],
+        bump_sequence: bool = True,
+    ) -> None:
+        """Record last_received for an accepted device message without state fields."""
+        index, device = matches[0]
+        previous_state = (
+            _sanitize_mqtt_state(device.get(MQTT_STATE_KEY)) or {}
+        )
+        next_state = dict(previous_state)
+        if bump_sequence:
+            self._mqtt_receive_sequence += 1
+        next_state[_LOCAL_RECEIVE_SEQUENCE_KEY] = (
+            self._mqtt_receive_sequence
+        )
+        next_state["last_received_at"] = datetime.now(timezone.utc)
+        next_data = dict(self.data)
+        next_devices = dict(devices)
+        next_collection = list(collection)
+        next_device = dict(device)
+        next_device[MQTT_STATE_KEY] = next_state
+        next_collection[index] = next_device
+        next_devices[device_type] = next_collection
+        next_data["devices"] = next_devices
+        self.async_set_updated_data(next_data)
+
     def _cancel_rfid_event_refreshes(self) -> None:
         """Cancel pending event refreshes and clear coalescing flags."""
         self._rfid_event_in_flight.clear()
@@ -3005,9 +3036,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         gritlock_status_frame = (
             device_type == "trigger" and root_message_type == "sts"
         )
+        # Exact RFID s/st/sts invalidate Hub-mirrored REST state and schedule a
+        # coalesced individual refresh. Compound types such as st/detail do not.
         rfid_event_scheduled = (
             device_type == "rfid"
-            and normalized_message_type in {"s", "st"}
+            and normalized_message_type in {"s", "st", "sts"}
             and self._schedule_rfid_event_refresh(normalized_device_id)
         )
         gritlock_startup_accepted = False
@@ -3042,6 +3075,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or (timestamp_present and source_timestamp is _INVALID)
         ):
             if rfid_event_scheduled or gritlock_startup_accepted:
+                self._touch_device_mqtt_last_received(
+                    devices=devices,
+                    collection=collection,
+                    device_type=device_type,
+                    matches=matches,
+                    bump_sequence=not gritlock_startup_accepted,
+                )
                 return True
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid ordering metadata"
@@ -3055,6 +3095,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 normalized_device_id, payload
             )
             if accepted:
+                self._touch_device_mqtt_last_received(
+                    devices=devices,
+                    collection=collection,
+                    device_type=device_type,
+                    matches=matches,
+                    bump_sequence=False,
+                )
                 self._wake_mqtt_state_waiters()
             return accepted
 
@@ -3081,9 +3128,23 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if not accepted:
                     return False
+                self._touch_device_mqtt_last_received(
+                    devices=devices,
+                    collection=collection,
+                    device_type=device_type,
+                    matches=matches,
+                    bump_sequence=False,
+                )
                 self._wake_mqtt_state_waiters()
                 return True
             if gritlock_startup_accepted or rfid_event_scheduled:
+                self._touch_device_mqtt_last_received(
+                    devices=devices,
+                    collection=collection,
+                    device_type=device_type,
+                    matches=matches,
+                    bump_sequence=not gritlock_startup_accepted,
+                )
                 self._wake_mqtt_state_waiters()
                 return True
             _LOGGER.debug(
@@ -3114,6 +3175,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             ):
                 if rfid_event_scheduled or gritlock_startup_accepted:
+                    self._touch_device_mqtt_last_received(
+                        devices=devices,
+                        collection=collection,
+                        device_type=device_type,
+                        matches=matches,
+                        bump_sequence=not gritlock_startup_accepted,
+                    )
                     return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
@@ -3127,6 +3195,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             ):
                 if rfid_event_scheduled or gritlock_startup_accepted:
+                    self._touch_device_mqtt_last_received(
+                        devices=devices,
+                        collection=collection,
+                        device_type=device_type,
+                        matches=matches,
+                        bump_sequence=not gritlock_startup_accepted,
+                    )
                     return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"

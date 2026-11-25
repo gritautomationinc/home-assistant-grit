@@ -125,7 +125,7 @@ supported Home Assistant APIs, and reloads once.
 | State | Authoritative evidence |
 | --- | --- |
 | Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
-| RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
+| RFID | Strict individual `GET /api/rfid/{id}` boolean `state` (Hub in-memory observation); exact MQTT `s`/`st`/`sts` invalidate and request a coalesced refresh |
 | GRITLock | One latest immutable observation published by current-connection startup `/sts` or `/tel` `gls`, a naturally settled live `/gl-d` burst, or explicit disagreement |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
@@ -224,13 +224,15 @@ the latest observation, wakes waiters to fail, and cancels the bounded burst
 task; reconnect increments the connection
 generation and begins new startup hydration.
 
-RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
-most one active task and one trailing request per reader, tracks at most 64
-readers, and shares a four-request concurrency limit. Gate/RFID reconnect
-telemetry requests and best-effort trigger startup requests are similarly
-bounded and coalesced. RFID continues to hydrate from its strict individual REST
-detail; MQTT payload values do not replace that authority. Cancellation
-propagates; no detached work should continue after unload.
+RFID MQTT event refresh (exact `s`, `st`, and registration `sts`) is debounced
+at approximately 250 milliseconds, has at most one active task and one trailing
+request per reader, tracks at most 64 readers, and shares a four-request
+concurrency limit. Gate/RFID reconnect telemetry requests and best-effort
+trigger startup requests are similarly bounded and coalesced. RFID continues to
+hydrate from its strict individual REST detail; MQTT payload values do not
+replace that authority. Unknown lock state means the Hub has not observed that
+reader since the Hub process started. Cancellation propagates; no detached work
+should continue after unload.
 
 ## Privacy boundary
 

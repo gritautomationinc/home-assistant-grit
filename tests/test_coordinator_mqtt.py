@@ -2708,8 +2708,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(api.telemetry_calls, [])
-    async def test_exact_rfid_s_and_st_schedule_authoritative_refresh(self):
-        for message_type in ("s", "st"):
+    async def test_exact_rfid_s_st_and_sts_schedule_authoritative_refresh(self):
+        for message_type in ("s", "st", "sts"):
             with self.subTest(message_type=message_type):
                 api = FakeApi()
                 api.rfid_details["device-rfid"] = {
@@ -2729,6 +2729,9 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 }
                 if message_type == "st":
                     payload["rssi"] = -57
+                if message_type == "sts":
+                    payload["sts"] = 1
+                    payload["rssi"] = -60
 
                 with mock.patch.object(
                     coordinator_module,
@@ -2751,11 +2754,15 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                         7,
                     )
                     self.assertNotIn("FABRICATED_ACTIVITY", repr(instance.data))
+                    state = instance.data["devices"]["rfid"][0][
+                        coordinator_module.MQTT_STATE_KEY
+                    ]
+                    self.assertIn("last_received_at", state)
                     if message_type == "st":
-                        state = instance.data["devices"]["rfid"][0][
-                            coordinator_module.MQTT_STATE_KEY
-                        ]
                         self.assertEqual(state["rssi"], -57)
+                    if message_type == "sts":
+                        self.assertEqual(state["rssi"], -60)
+                        self.assertTrue(state["online"])
                     await self.wait_for_rfid_event_idle(instance)
 
                 self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
@@ -2794,19 +2801,10 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
         self.assertFalse(instance.rfid_enabled("device-rfid"))
 
-    async def test_rfid_sts_and_nonexact_types_do_not_schedule_event_refresh(self):
+    async def test_rfid_compound_types_do_not_schedule_event_refresh(self):
         instance = self.coordinator(FakeApi())
         instance.set_mqtt_connected(True)
 
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "sts",
-                {"s": 0, "sts": 1, "rssi": -60},
-            )
-        )
         self.assertTrue(
             instance.handle_mqtt_message(
                 "hub-expected",
@@ -2818,6 +2816,47 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(instance._rfid_event_tasks, {})
         self.assertEqual(instance.api.rfid_detail_calls, [])
+        state = instance.data["devices"]["rfid"][0][
+            coordinator_module.MQTT_STATE_KEY
+        ]
+        self.assertIn("last_received_at", state)
+
+    async def test_rfid_s_without_state_fields_updates_last_received(self):
+        api = FakeApi()
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": False,
+        }
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            before = datetime.now(timezone.utc)
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0, "scr": "FABRICATED_ACTIVITY"},
+                )
+            )
+            state = instance.data["devices"]["rfid"][0][
+                coordinator_module.MQTT_STATE_KEY
+            ]
+            received = state["last_received_at"]
+            after = datetime.now(timezone.utc)
+            self.assertEqual(received.tzinfo, timezone.utc)
+            self.assertLessEqual(before, received)
+            self.assertLessEqual(received, after)
+            self.assertNotIn("state", state)
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
 
     async def test_rfid_s_and_st_within_debounce_are_coalesced(self):
         api = FakeApi()
