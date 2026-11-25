@@ -5,14 +5,16 @@
 # - The HA smoke suite (tests/ha) runs in CI only.
 # - Home Assistant 2026.11.1 is installed from the Core git tag because the PyPI index
 #   available to CI and local development may lag the Core release cadence.
-#
+# - pytest-homeassistant (official Core package) replaces the obsolete
+#   pytest-homeassistant-custom-component, which is incompatible with HA 2026.11.1.
+
 # Home Assistant (pinned).
 homeassistant @ git+https://github.com/home-assistant/core@2026.11.1
 
-# Pytest stack for the HA smoke suite.
-pytest==8.4.2
-pytest-asyncio==1.2.0
-pytest-aiohttp==1.1.0
+# Official HA pytest package, version-matched to Core.
+pytest-homeassistant==2026.11.1
 
-# `pytest-homeassistant-custom-component` is installed in CI with `--no-deps` to avoid
-# its pinned Home Assistant dependency, while still using its test fixtures.
+# Pytest stack aligned with pytest-homeassistant==2026.11.1.
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-aiohttp==1.1.1

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 if os.environ.get("GRIT_HUB_HA_SMOKE") == "1":
-    # Provide the Home Assistant test fixtures when the smoke suite is enabled.
-    pytest_plugins = ("pytest_homeassistant_custom_component.plugins",)
-
+    # Official HA test package (replaces broken pytest-homeassistant-custom-component
+    # against Core 2026.11.1). Import Home Assistant first so httpx2 can alias
+    # before any residual respx import paths.
+    import homeassistant  # noqa: F401
