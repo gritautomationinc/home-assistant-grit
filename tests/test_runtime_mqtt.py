@@ -187,6 +187,7 @@ class FakeMqtt:
         use_tls: bool,
         verify_tls: bool,
         connection_state_callback: Callable[[bool], None],
+        expected_hub_id: str | None = None,
     ) -> None:
         hass = _ACTIVE_HASS
         if hass is None:
@@ -201,6 +202,7 @@ class FakeMqtt:
         self.verify_tls = verify_tls
         self.message_callback = message_callback
         self.connection_state_callback = connection_state_callback
+        self.expected_hub_id = expected_hub_id
         self.start_thread_id: int | None = None
         self.stop_thread_ids: list[int] = []
         self.start_calls = 0
@@ -260,12 +262,21 @@ def _any_validator(*_validators: Any) -> object:
     return object()
 
 
+def _in_validator(_options: Any) -> object:
+    return object()
+
+
+class ServiceValidationError(HomeAssistantError):
+    """Stub of homeassistant.exceptions.ServiceValidationError."""
+
+
 def _install_stubs(package_name: str) -> None:
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Schema = _Schema
     voluptuous.Required = _identity_key
     voluptuous.Optional = _identity_key
     voluptuous.Any = _any_validator
+    voluptuous.In = _in_validator
     sys.modules["voluptuous"] = voluptuous
 
     homeassistant = types.ModuleType("homeassistant")
@@ -310,6 +321,7 @@ def _install_stubs(package_name: str) -> None:
     exceptions.ConfigEntryError = ConfigEntryError
     exceptions.ConfigEntryNotReady = ConfigEntryNotReady
     exceptions.HomeAssistantError = HomeAssistantError
+    exceptions.ServiceValidationError = ServiceValidationError
     homeassistant.config_entries = config_entries
     homeassistant.core = core
     homeassistant.exceptions = exceptions
@@ -333,6 +345,7 @@ def _install_stubs(package_name: str) -> None:
     api_module = types.ModuleType(f"{package_name}.api")
     api_module.GritHubApiClient = FakeApi
     api_module.GritHubApiError = GritHubApiError
+    api_module.GritHubValidationError = GritHubApiError
     sys.modules[api_module.__name__] = api_module
 
     coordinator_module = types.ModuleType(f"{package_name}.coordinator")

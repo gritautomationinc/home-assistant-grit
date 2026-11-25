@@ -140,9 +140,12 @@ refresh. No current displayed value or HTTP success alone confirms a command.
 
 For gates, compact MQTT field `p` is a bounded 0--100 position. Firmware may
 encode it as a number or bounded numeric text. Startup `/sts` or `/tel`, plus
-live `/mv`, `/mv-d`, `/p`, `/s`, and `/st` observations, enter the same
-sanitized per-device state path. `/req-tel` cannot hydrate or alter a gate. Gate
-startup state is never taken from REST.
+live `/mv-d`, `/p`, and `/st` observations, enter the same sanitized per-device
+state path. Hub command `/mv` is ignored as state. Gate `/s` currently still
+updates open state through that path when it carries a valid open, state, or
+`s` field or a usable position; that behaviour is unchanged here pending an
+owner decision relative to ADR 0001. `/req-tel` cannot hydrate or alter a gate.
+Gate startup state is never taken from REST.
 
 ### Continuous GRITLock observed state
 

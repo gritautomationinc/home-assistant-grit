@@ -343,6 +343,8 @@ class FakeCoordinator:
         self.api = FakeApi()
         self.listener_updates = 0
         self.gritlock_state_value: bool | None = None
+        self.gritlock_evidence_source_value: str | None = None
+        self.gritlock_live_unconfirmed_value: int | None = None
         self.gritlock_participating_trigger_ids = frozenset({"trigger-test"})
         self.refresh_hook: Callable[[], None] | None = None
         self.refresh_block: asyncio.Event | None = None
@@ -385,6 +387,13 @@ class FakeCoordinator:
     @property
     def gritlock_state(self) -> bool | None:
         return self.gritlock_state_value
+
+    @property
+    def gritlock_evidence_source(self) -> str | None:
+        return self.gritlock_evidence_source_value
+
+    def gritlock_live_unconfirmed_trigger_count(self) -> int | None:
+        return self.gritlock_live_unconfirmed_value
 
     async def async_request_refresh(self) -> None:
         self.refresh_calls += 1
@@ -1533,16 +1542,16 @@ class EntityMqttTests(unittest.TestCase):
         self.assertEqual(self.coordinator.confirmation_calls, [])
         self.assertIsNone(cover.is_closed)
 
-    def test_refresh_boundaries_are_captured_before_switch_and_led_commands(self):
+    def test_switch_confirms_from_mqtt_not_rest_refresh(self):
         switch = self.device_switch()
         led = NUMBER_MODULE.GritHubSystemLedBrightnessNumber(
             self.coordinator
         )
         request_refresh = mock.AsyncMock()
+        boundary = self.coordinator.mqtt_receive_sequence
 
         async def switch_command(*_args: Any) -> None:
-            self.coordinator.refresh_sequence += 1
-            self.switch_device["state"] = True
+            self.coordinator.observe_device_state("solenoid", SWITCH_ID, True)
 
         with mock.patch.object(
             self.coordinator.api,
@@ -1556,10 +1565,20 @@ class EntityMqttTests(unittest.TestCase):
             self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
-        request_refresh.assert_awaited_once_with()
+        request_refresh.assert_not_awaited()
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [
+                (
+                    "solenoid",
+                    SWITCH_ID,
+                    True,
+                    boundary,
+                    SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+                )
+            ],
+        )
         self.assertTrue(switch.is_on)
-
-        request_refresh.reset_mock()
 
         async def led_command(*_args: Any) -> None:
             self.coordinator.refresh_sequence += 1
@@ -1593,7 +1612,6 @@ class EntityMqttTests(unittest.TestCase):
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_hook = lambda: None
             with self.assertRaisesRegex(
                 HomeAssistantError,
                 "Device state could not be confirmed",
@@ -1601,6 +1619,7 @@ class EntityMqttTests(unittest.TestCase):
                 self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 1)
 
     def test_matching_stale_state_cannot_confirm_command(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
@@ -1623,9 +1642,10 @@ class EntityMqttTests(unittest.TestCase):
             with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
                 self.loop.run_until_complete(switch.async_turn_off())
 
-        no_refresh.assert_awaited_once_with()
+        no_refresh.assert_not_awaited()
         self.assertTrue(cover.is_closed)
         self.assertEqual(cover.current_cover_position, 20)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 2)
 
     def test_gate_command_is_not_optimistic_while_confirmation_is_pending(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
@@ -1923,6 +1943,61 @@ class EntityMqttTests(unittest.TestCase):
                 )
         self.coordinator.refresh_block = None
         self.assertEqual(entity.native_value, 55)
+
+    def test_gritlock_extra_state_attributes_expose_evidence_only(self):
+        entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
+        self.coordinator.gritlock_evidence_source_value = "live_gl_d"
+        self.coordinator.gritlock_live_unconfirmed_value = 2
+        attributes = entity.extra_state_attributes
+        self.assertEqual(
+            attributes,
+            {
+                "evidence_source": "live_gl_d",
+                "unconfirmed_trigger_count": 2,
+            },
+        )
+        serialized = repr(attributes)
+        for excluded in (
+            "trigger-test",
+            "grit_",
+            HUB_ID,
+            HUB_IP,
+            "broker",
+            "password",
+            "token",
+        ):
+            self.assertNotIn(excluded, serialized)
+
+        self.coordinator.gritlock_evidence_source_value = "rest_seed"
+        self.coordinator.gritlock_live_unconfirmed_value = None
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {"evidence_source": "rest_seed"},
+        )
+
+        def confirm(expected: bool) -> bool:
+            self.coordinator.gritlock_state_value = expected
+            return True
+
+        self.coordinator.gritlock_confirmation_hook = confirm
+        self.loop.run_until_complete(entity.async_lock())
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {
+                "evidence_source": "rest_seed",
+                "unconfirmed_trigger_count": 0,
+            },
+        )
+
+        self.coordinator.gritlock_confirmation_hook = None
+        with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(entity.async_unlock())
+        self.assertEqual(
+            entity.extra_state_attributes.get("unconfirmed_trigger_count"),
+            1,
+        )
+        self.assertNotIn("participants", entity.extra_state_attributes)
+        self.assertNotIn("trigger_id", entity.extra_state_attributes)
 
     def test_gritlock_state_and_post_command_confirmation(self):
         entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)

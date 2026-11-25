@@ -13,12 +13,13 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
     HomeAssistantError,
+    ServiceValidationError,
 )
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
-from .api import GritHubApiClient, GritHubApiError
+from .api import GritHubApiClient, GritHubApiError, GritHubValidationError
 from .const import (
     CONF_BASE_URL,
     CONF_MQTT_HOST,
@@ -33,6 +34,7 @@ from .const import (
     CONF_TOKEN,
     CONF_VERIFY_SSL,
     DEFAULT_SCAN_INTERVAL,
+    DEVICE_TYPES,
     DOMAIN,
     ISSUE_HUB_VERSION_UNVERIFIED,
     ISSUE_LEGACY_MQTT_CREDENTIAL,
@@ -41,6 +43,7 @@ from .const import (
     MAX_MQTT_USERNAME_LENGTH,
     MQTT_READY_TIMEOUT,
     PLATFORMS,
+    REMOTE_TYPES,
     VERIFIED_HUB_VERSION_LABEL,
 )
 from .coordinator import GritHubCoordinator
@@ -218,6 +221,23 @@ def _validate_mqtt_settings(
         verify_tls=verify_tls,
         keepalive=keepalive,
         uses_legacy_credential=uses_legacy_credential,
+    )
+
+
+def _async_clear_repair_issues(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Remove all repair issues owned by this config entry."""
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+    )
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
     )
 
 
@@ -468,6 +488,7 @@ async def async_setup_entry(
         use_tls=settings.use_tls,
         verify_tls=settings.verify_tls,
         connection_state_callback=mqtt_connection_state_callback,
+        expected_hub_id=settings.hub_id,
     )
     runtime = GritHubRuntimeData(
         api=api,
@@ -581,6 +602,7 @@ async def async_unload_entry(
         entries = hass.data.get(DOMAIN)
         if isinstance(entries, dict):
             entries.pop(entry.entry_id, None)
+    _async_clear_repair_issues(hass, entry)
     return True
 
 
@@ -650,6 +672,8 @@ def _register_services(hass: HomeAssistant) -> None:
                 call.data.get("remote_type", "api"),
             )
             await _first_coordinator(hass).async_request_refresh()
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -658,6 +682,8 @@ def _register_services(hass: HomeAssistant) -> None:
         try:
             await api.refresh_device(call.data["device_type"], call.data["device_id"])
             await _first_coordinator(hass).async_request_refresh()
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -665,6 +691,8 @@ def _register_services(hass: HomeAssistant) -> None:
         api = _first_api(hass)
         try:
             await api.locate_device(call.data["device_type"], call.data["device_id"])
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -673,22 +701,28 @@ def _register_services(hass: HomeAssistant) -> None:
         SERVICE_DEVICE_COMMAND,
         device_command,
         schema=vol.Schema({
-            vol.Required("device_type"): str,
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
             vol.Required("device_id"): vol.Any(str, int),
             vol.Required("command_name"): str,
             vol.Required("action"): str,
-            vol.Optional("remote_type", default="api"): str,
+            vol.Optional("remote_type", default="api"): vol.In(sorted(REMOTE_TYPES)),
         }),
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_REFRESH_DEVICE,
         refresh_device,
-        schema=vol.Schema({vol.Required("device_type"): str, vol.Required("device_id"): vol.Any(str, int)}),
+        schema=vol.Schema({
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
+            vol.Required("device_id"): vol.Any(str, int),
+        }),
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_LOCATE_DEVICE,
         locate_device,
-        schema=vol.Schema({vol.Required("device_type"): str, vol.Required("device_id"): vol.Any(str, int)}),
+        schema=vol.Schema({
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
+            vol.Required("device_id"): vol.Any(str, int),
+        }),
     )

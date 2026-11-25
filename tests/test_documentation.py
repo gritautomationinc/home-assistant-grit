@@ -75,6 +75,31 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIsNone(TOKEN_PATTERN.search(text))
                 self.assertIsNone(LIVE_ID_PATTERN.search(text))
 
+    def test_readme_notice_section_is_present(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        notice = (
+            "## Notice\n"
+            "\n"
+            "This is a community-maintained, unofficial Home Assistant "
+            "integration for GRIT Hub. It is published by GRIT Automation, "
+            "Inc. as a convenience.\n"
+            "\n"
+            "It is provided AS IS, without warranty of any kind. GRIT "
+            "Automation, Inc. does not provide support for it and does not "
+            "guarantee updates, fixes, compatibility with any Home Assistant "
+            "or GRIT Hub version, or continued availability. Use at your own "
+            "risk.\n"
+            "\n"
+            "Issues and pull requests are welcome, but may not be answered.\n"
+        )
+        self.assertIn(notice, readme)
+        self.assertNotIn(
+            "is not affiliated with, endorsed by, or supported by GRIT "
+            "or GRIT Automation",
+            readme,
+        )
+        self.assertIn("GRIT Automation, Inc.", readme)
+
     def test_release_status_and_version_are_consistent(self) -> None:
         manifest = json.loads(
             (ROOT / "custom_components/grit_hub/manifest.json").read_text(

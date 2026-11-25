@@ -23,4 +23,3 @@ Home Assistant state for GRIT devices is confirmed only by device-originated evi
 - After an MQTT reconnect the displayed state becomes unknown until a successful REST seed or later device evidence arrives. Late `/sts` and `/gl-d` frames after the startup window still update display state. Live `/gl-d` authority is not overwritten by later status-only frames.
 - The integration must topic-gate before parsing payloads, to avoid interpreting non-device traffic as device state.
 - Tests and fixtures must distinguish command topics from device-originated topics, and must cover settle-time participation against a mid-burst inventory change.
-

@@ -108,6 +108,7 @@ class GritLiveMqtt:
         use_tls: bool = False,
         verify_tls: bool = True,
         connection_state_callback: GritMqttConnectionStateCallback | None = None,
+        expected_hub_id: str | None = None,
     ) -> None:
         """Initialize connection settings without connecting to the broker."""
         if not isinstance(host, str) or not host.strip():
@@ -140,6 +141,14 @@ class GritLiveMqtt:
             connection_state_callback
         ):
             raise TypeError("MQTT connection-state callback must be callable")
+        if expected_hub_id is not None and (
+            not isinstance(expected_hub_id, str)
+            or not expected_hub_id.strip()
+            or len(expected_hub_id) > MAX_MQTT_TOPIC_COMPONENT_LENGTH
+            or "/" in expected_hub_id
+            or any(ord(char) < 32 for char in expected_hub_id)
+        ):
+            raise ValueError("MQTT expected hub id is invalid")
 
         self._host = host.strip()
         self._port = port
@@ -150,6 +159,9 @@ class GritLiveMqtt:
         self._verify_tls = verify_tls
         self._message_callback = message_callback
         self._connection_state_callback = connection_state_callback
+        self._expected_hub_id = (
+            None if expected_hub_id is None else expected_hub_id.strip()
+        )
 
         self._client: Any | None = None
         self._network_loop_started = False
@@ -627,6 +639,16 @@ class GritLiveMqtt:
             return
 
         hub_id = parts[1]
+        # Gate expected hub id before JSON parse (AC9).
+        if (
+            self._expected_hub_id is not None
+            and hub_id != self._expected_hub_id
+        ):
+            _LOGGER.debug(
+                "GRIT MQTT message ignored: hub id does not match configured hub"
+            )
+            return
+
         device_type = topic_class
         device_id = parts[3]
         message_type = "/".join(parts[4:])
