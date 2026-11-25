@@ -1232,6 +1232,34 @@ class CoordinatorMqttTests(unittest.TestCase):
         )
         self.assertIsNone(instance.gritlock_state)
 
+    def test_rest_inventory_shrink_resettles_open_burst_without_new_mqtt(self):
+        """Latest REST inventory can complete an open burst after quiet exit."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=30.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=False, now=30.5)
+        )
+        self.assertIs(instance._gritlock_live_burst, burst)
+
+        # Simulate a successful trigger poll that shrinks participants to the
+        # already-observed set, then re-kicks settle (as _async_update_data does).
+        instance.data["devices"]["trigger"][2]["gritLockEnabled"] = False
+        self.assertTrue(
+            instance._settle_gritlock_burst(burst, force=False, now=31.0)
+        )
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-0", "trigger-1"}),
+        )
+
     def test_later_unrelated_status_does_not_overwrite_live_state(self):
         instance = self.gritlock_coordinator(1)
         self.send_gritlock(instance, "trigger-0", 0, 0)

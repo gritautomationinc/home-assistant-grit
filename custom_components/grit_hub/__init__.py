@@ -224,6 +224,23 @@ def _validate_mqtt_settings(
     )
 
 
+def _async_clear_repair_issues(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Remove all repair issues owned by this config entry."""
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+    )
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+    )
+
+
 def _async_update_repair_issues(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -585,6 +602,7 @@ async def async_unload_entry(
         entries = hass.data.get(DOMAIN)
         if isinstance(entries, dict):
             entries.pop(entry.entry_id, None)
+    _async_clear_repair_issues(hass, entry)
     return True
 
 

@@ -156,10 +156,18 @@ class GritHubApiClient:
         )
 
     async def get_collection(self, device_type: str) -> list[dict[str, Any]]:
-        data = await self.request("GET", f"/api/{quote(device_type)}")
+        normalized_type = _normalize_path_component(
+            device_type, label="Device type"
+        )
+        if normalized_type not in DEVICE_TYPES:
+            raise GritHubValidationError("Device type is invalid")
+        data = await self.request(
+            "GET",
+            f"/api/{quote(normalized_type, safe='')}",
+        )
         items = normalise_list(data)
         sanitized = [
-            sanitize_device_data(item, device_type=device_type)
+            sanitize_device_data(item, device_type=normalized_type)
             for item in items
         ]
         return [item for item in sanitized if item]

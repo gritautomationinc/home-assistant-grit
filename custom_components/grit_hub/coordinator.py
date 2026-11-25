@@ -2996,6 +2996,19 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._gritlock_update_sequence = refresh_sequence
             # Seed only from a successful trigger inventory read.
             self._maybe_seed_gritlock_state_from_rest(devices=data["devices"])
+            # Assign before re-settle so participation uses the latest
+            # inventory (ADR 0001). The update coordinator also stores the
+            # returned payload; aligning here lets an open live burst finish
+            # when REST participants shrink without a new gl-d frame.
+            self.data = data
+            burst = self._gritlock_live_burst
+            if (
+                burst is not None
+                and self._mqtt_connected
+                and burst.connection_generation
+                == self._mqtt_connection_generation
+            ):
+                self._ensure_gritlock_settle_task(burst)
 
         collection_errors = {
             key
