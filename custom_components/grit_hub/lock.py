@@ -7,7 +7,7 @@ from collections import Counter
 from homeassistant.components.lock import LockEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import obj_id, obj_name
+from .api import GritHubApiError, obj_id
 from .const import DEVICE_CONFIRM_TIMEOUT, DOMAIN, HUB_CONFIRM_TIMEOUT
 from .entity import GritHubEntity
 
@@ -41,20 +41,40 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
     _attr_name = "GRITLock"
     _attr_unique_id = "grit_hub_system_gritlock"
     _attr_icon = "mdi:shield-lock"
+    _last_unconfirmed_trigger_count: int | None = None
 
     @property
     def available(self) -> bool:
-        state = self.coordinator.gritlock_state
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.mqtt_connected
-            and isinstance(state, bool)
-        )
+        # Do not become unavailable solely because GRITLock state is currently
+        # unknown; remain available when hub REST polling is succeeding.
+        return bool(getattr(self.coordinator, "last_update_success", False))
 
     @property
     def is_locked(self) -> bool | None:
         state = self.coordinator.gritlock_state
         return state if isinstance(state, bool) else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int]:
+        """Expose evidence source and unconfirmed trigger count only."""
+        attributes: dict[str, str | int] = {}
+        source = getattr(self.coordinator, "gritlock_evidence_source", None)
+        if isinstance(source, str) and source and len(source) <= 64:
+            attributes["evidence_source"] = source
+        count = self._last_unconfirmed_trigger_count
+        if not isinstance(count, int):
+            live_count = getattr(
+                self.coordinator,
+                "gritlock_live_unconfirmed_trigger_count",
+                None,
+            )
+            if callable(live_count):
+                count = live_count()
+            elif isinstance(live_count, int):
+                count = live_count
+        if isinstance(count, int) and 0 <= count <= 64:
+            attributes["unconfirmed_trigger_count"] = count
+        return attributes
 
     async def async_lock(self, **kwargs) -> None:
         await self._async_set_gritlock(True)
@@ -63,32 +83,47 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
         await self._async_set_gritlock(False)
 
     async def _async_set_gritlock(self, locked: bool) -> None:
-        if not self.coordinator.mqtt_connected:
-            raise HomeAssistantError(
-                "GRITLock state could not be confirmed"
-            )
         connection_generation = (
             self.coordinator.mqtt_connection_generation
         )
         confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_gritlock(locked)
-            confirmed = await self.coordinator.async_wait_for_gritlock_state(
-                locked,
-                after_connection_generation=connection_generation,
-                after_receive_sequence=confirmation_boundary,
-                timeout=HUB_CONFIRM_TIMEOUT,
-            )
+            confirmed = False
+            if self.coordinator.mqtt_connected:
+                confirmed = await self.coordinator.async_wait_for_gritlock_state(
+                    locked,
+                    after_connection_generation=connection_generation,
+                    after_receive_sequence=confirmation_boundary,
+                    timeout=HUB_CONFIRM_TIMEOUT,
+                )
         except asyncio.CancelledError:
             raise
+        except GritHubApiError as err:
+            # Preserve displayed state. 409 is informational (superseded);
+            # 502 reports a partial Hub apply.
+            raise HomeAssistantError(str(err)) from err
         except Exception as err:
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             ) from err
-        if not confirmed:
+        if confirmed:
+            self._last_unconfirmed_trigger_count = 0
+            return
+        missing = self.coordinator.gritlock_unconfirmed_trigger_count(
+            after_connection_generation=connection_generation,
+            after_receive_sequence=confirmation_boundary,
+        )
+        if isinstance(missing, int):
+            self._last_unconfirmed_trigger_count = missing
+        if missing:
             raise HomeAssistantError(
-                "GRITLock state could not be confirmed"
+                f"GRITLock state could not be confirmed "
+                f"(missing {missing} trigger confirmations)"
             )
+        raise HomeAssistantError(
+            "GRITLock state could not be confirmed"
+        )
 
 
 class GritHubRfidLock(GritHubEntity, LockEntity):
@@ -100,7 +135,8 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_rfid_{ident}"
-        self._attr_name = obj_name(device, "RFID reader")
+        # Primary entity: name comes from the device (avoids lock.bandsaw_bandsaw).
+        self._attr_name = None
 
     @property
     def available(self) -> bool:

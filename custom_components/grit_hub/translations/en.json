@@ -25,8 +25,8 @@
         }
       },
       "advanced": {
-        "title": "Advanced MQTT settings",
-        "description": "Automatic discovery could not validate all required MQTT settings, or advanced review was requested. Enter overrides as needed; leaving both MQTT credential fields blank uses the provisional vendor-default read-only credentials.",
+        "title": "MQTT settings",
+        "description": "Enter the MQTT broker settings and the Hub's per-hub read-only MQTT username and password. Setup does not use a built-in shared password.",
         "data": {
           "scan_interval": "REST scan interval (seconds)",
           "mqtt_host": "MQTT broker hostname",
@@ -41,15 +41,15 @@
         "data_description": {
           "mqtt_host": "Hostname or address of an existing MQTT broker.",
           "mqtt_hub_id": "Hub identifier used in GRIT MQTT topics.",
-          "mqtt_username": "Leave both credential fields blank to use the provisional read-only defaults, or enter an override username.",
-          "mqtt_password": "Leave both credential fields blank to use the provisional read-only defaults; an override password requires an override username.",
+          "mqtt_username": "Copy the Hub's per-hub read-only MQTT username.",
+          "mqtt_password": "Copy the Hub's per-hub read-only MQTT password. A password requires a username.",
           "mqtt_use_tls": "Enable encryption for the MQTT connection.",
           "mqtt_verify_tls": "Verify the broker certificate when TLS is enabled."
         }
       },
       "reconfigure": {
         "title": "Reconfigure GRIT Hub",
-        "description": "Update connection settings. Leave the API token or MQTT password blank to keep the stored secret. Clearing the MQTT username also clears its password.",
+        "description": "Update connection settings. Leave the API token or MQTT password blank to keep the stored secret. Clearing the MQTT username also clears its password. Enter the Hub's per-hub read-only MQTT credential when replacing a legacy shared default.",
         "data": {
           "base_url": "GRIT API base URL",
           "token": "New GRIT API bearer token",
@@ -84,6 +84,7 @@
       "invalid_mqtt_hub_id": "Enter a valid MQTT topic hub ID.",
       "invalid_mqtt_username": "Enter a valid MQTT username.",
       "invalid_mqtt_password": "Enter a valid MQTT password.",
+      "mqtt_credentials_required": "Enter the Hub's per-hub MQTT username and password.",
       "mqtt_password_requires_username": "An MQTT password requires an MQTT username.",
       "invalid_mqtt_tls": "Select valid MQTT TLS settings.",
       "invalid_mqtt_keepalive": "Enter an MQTT keepalive from 1 to 65535 seconds."
@@ -101,6 +102,16 @@
           "scan_interval": "Scan interval seconds"
         }
       }
+    }
+  },
+  "issues": {
+    "legacy_mqtt_credential": {
+      "title": "Replace the legacy shared MQTT credential",
+      "description": "This GRIT Hub entry is still using the pre-0.2.0 shared read-only MQTT credential. Reconfigure the integration and enter the Hub's per-hub read-only MQTT username and password."
+    },
+    "hub_version_unverified": {
+      "title": "Hub version not verified with this integration",
+      "description": "This GRIT Hub reports software version {hub_version}. Integration release 0.2.0 was verified against Hub {verified_version}. Setup continues, but behavior on this Hub version is not verified."
     }
   }
 }

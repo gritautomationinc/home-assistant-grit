@@ -85,11 +85,17 @@ a separate safety concern.
 
 ## RFID state is stale, Unknown, or unavailable
 
-RFID state comes only from strict individual `GET /api/rfid/{id}` detail.
-Collection `lockout`, MQTT `sts.s`, and MQTT `s`/`st` payload values are not lock
-state. Exact `s` and `st` messages only trigger a bounded individual refresh.
-An offline reader is unavailable; temporary read failures retain the last valid
-state rather than inventing one. The default poll is a 30-second fallback.
+RFID lock state is the Hub's in-memory observation, read only from strict
+individual `GET /api/rfid/{id}` detail. Unknown means the Hub has not seen that
+reader's state since the Hub process started. Collection `lockout` and MQTT
+payload values are not lock state. Exact MQTT `s`, `st`, and `sts` only trigger
+a bounded, coalesced individual REST refresh. An offline reader is unavailable;
+temporary read failures retain the last valid state rather than inventing one.
+The default poll is a 30-second fallback.
+
+MQTT Last Received stays available while the broker connection is up. A missing
+timestamp means never seen this session (unknown), not that the sensor itself is
+unavailable.
 
 ## GRITLock is Unknown or does not confirm
 
@@ -102,17 +108,20 @@ A complete REST participant set is exact only when fully represented by current
 instead of waiting for the full five-second window. Startup status can display
 state but cannot confirm a later command.
 
-Live `/gl` bursts choose participants only from their fresh frames. A mixed
-burst uses exactly the fresh `gte=1` subset. An all-`gte=0` burst uses all fresh
-observed triggers, including one sparse valid frame. REST participant metadata
-may bound startup hydration but cannot redefine live evidence. Selected
-participants must agree on `gls`; complete disagreement makes the entity Unknown.
+Live `/gl-d` bursts require strict device evidence. If REST inventory provides a
+usable participating trigger set (`gritLockEnabled=true`), a burst settles only
+when every REST-participating trigger has provided a fresh valid `gls` and all
+agree. Otherwise, a mixed burst uses exactly the fresh `gle=1` subset. An
+all-`gle=0` (or missing `gle`) burst uses all fresh observed triggers, including
+one sparse valid frame. Selected participants must agree on `gls`; complete
+disagreement makes the entity Unknown. `/gl` command frames do not change state
+and cannot confirm a command.
 Malformed, incomplete, overflowing, timed-out, or unsettled live evidence
 preserves an earlier valid state and publishes no new authority.
 
 Lock and Unlock capture MQTT connection and receive-sequence boundaries before
 the explicit REST request. Confirmation needs a naturally settled matching
-`live_gl` observation whose supporting frames are all newer than that boundary.
+`live_gl_d` observation whose supporting frames are all newer than that boundary.
 HTTP success, the displayed state, startup status, stale evidence, an opposite
 state, timeout, disconnect, or reconnect cannot confirm. A frame arriving while
 the REST request is still awaiting remains eligible. No-op requests also require

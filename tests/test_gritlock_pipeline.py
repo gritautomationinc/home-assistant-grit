@@ -78,13 +78,13 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         instance,
         frames: tuple[tuple[str, int, int], ...],
     ) -> None:
-        for trigger_id, gte, gls in frames:
+        for trigger_id, gle, gls in frames:
             accepted = instance.handle_mqtt_message(
                 "hub-expected",
                 "trigger",
                 trigger_id,
-                "gl",
-                {"gte": gte, "gls": gls},
+                "gl-d",
+                {"gle": gle, "gls": gls},
             )
             if not accepted:
                 raise AssertionError("fabricated GRITLock frame was rejected")
@@ -119,7 +119,23 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(instance.gritlock_state)
         self.assertIsNone(entity.is_locked)
-        self.assertFalse(entity.available)
+        self.assertTrue(entity.available)
+
+    async def test_command_without_mqtt_confirmation_still_reaches_hub(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": True},
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+
+        with self.assertRaises(entity_tests.HomeAssistantError):
+            await entity.async_lock()
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIsNone(entity.is_locked)
+        self.assertTrue(entity.available)
 
     async def test_dion_startup_manual_lock_and_unlock_command_pipeline(self):
         devices = coordinator_tests._device_map()
@@ -254,6 +270,14 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertFalse(entity.is_locked)
+        self.assertEqual(
+            instance.gritlock_evidence_source,
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
+        self.assertEqual(
+            entity.extra_state_attributes.get("evidence_source"),
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
 
         with (
             mock.patch.object(LOCK_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01),
@@ -268,6 +292,42 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(instance.gritlock_state)
         self.assertFalse(entity.is_locked)
         self.assertTrue(entity.available)
+        self.assertEqual(
+            entity.extra_state_attributes.get("unconfirmed_trigger_count"),
+            2,
+        )
+        self.assertNotIn("participants", entity.extra_state_attributes)
+        self.assertNotIn("trigger-one", repr(entity.extra_state_attributes))
+
+    async def test_gl_frames_do_not_confirm_gritlock_state(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": True},
+            {"id": "trigger-two", "gritLockEnabled": True},
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        instance.set_mqtt_connected(True)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+
+        with (
+            mock.patch.object(LOCK_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01),
+            self.assertRaisesRegex(
+                entity_tests.HomeAssistantError,
+                "missing 2 trigger confirmations",
+            ),
+        ):
+            task = asyncio.create_task(entity.async_lock())
+            await asyncio.sleep(0)
+            for _ in range(6):
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "gl",
+                    {"gls": 1, "gle": 1},
+                )
+            await task
 
     async def test_noop_timeout_keeps_last_authoritative_state(self):
         devices = coordinator_tests._device_map()

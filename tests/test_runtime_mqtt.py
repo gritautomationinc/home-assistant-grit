@@ -117,14 +117,27 @@ class FakeCoordinator:
         self.data = {
             "devices": {
                 "gate": [{"id": FABRICATED_DEVICE, "name": "Fabricated gate"}]
-            }
+            },
+            "hub": {
+                "id": "0123456789abcdef0123456789abcdef",
+                "hubVersion": "1.1.1197",
+                "softwareVersion": "1.1.1197",
+            },
         }
+        self.last_complete_inventory: frozenset[tuple[str, str]] | None = (
+            frozenset({("gate", FABRICATED_DEVICE)})
+        )
         self.messages: list[tuple[Any, ...]] = []
         self.message_thread_ids: list[int] = []
         self.reconciliation_starts = 0
         self.reconciliation_stops = 0
         hass.scenario.events.append("coordinator_construct")
         hass.scenario.coordinators.append(self)
+
+    @property
+    def hub_data(self) -> dict[str, Any]:
+        hub = self.data.get("hub")
+        return hub if isinstance(hub, dict) else {}
 
     async def async_config_entry_first_refresh(self) -> None:
         self.hass.scenario.events.append("rest_refresh")
@@ -174,6 +187,7 @@ class FakeMqtt:
         use_tls: bool,
         verify_tls: bool,
         connection_state_callback: Callable[[bool], None],
+        expected_hub_id: str | None = None,
     ) -> None:
         hass = _ACTIVE_HASS
         if hass is None:
@@ -188,6 +202,7 @@ class FakeMqtt:
         self.verify_tls = verify_tls
         self.message_callback = message_callback
         self.connection_state_callback = connection_state_callback
+        self.expected_hub_id = expected_hub_id
         self.start_thread_id: int | None = None
         self.stop_thread_ids: list[int] = []
         self.start_calls = 0
@@ -247,31 +262,81 @@ def _any_validator(*_validators: Any) -> object:
     return object()
 
 
+def _in_validator(_options: Any) -> object:
+    return object()
+
+
+class ServiceValidationError(HomeAssistantError):
+    """Stub of homeassistant.exceptions.ServiceValidationError."""
+
+
 def _install_stubs(package_name: str) -> None:
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Schema = _Schema
     voluptuous.Required = _identity_key
     voluptuous.Optional = _identity_key
     voluptuous.Any = _any_validator
+    voluptuous.In = _in_validator
     sys.modules["voluptuous"] = voluptuous
 
     homeassistant = types.ModuleType("homeassistant")
     config_entries = types.ModuleType("homeassistant.config_entries")
     core = types.ModuleType("homeassistant.core")
     exceptions = types.ModuleType("homeassistant.exceptions")
+    helpers = types.ModuleType("homeassistant.helpers")
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+    device_registry = types.ModuleType("homeassistant.helpers.device_registry")
+    issue_registry = types.ModuleType("homeassistant.helpers.issue_registry")
+
+    class _EmptyRegistry:
+        def async_remove(self, _entity_id: str) -> None:
+            return None
+
+    def _async_get(_hass: Any) -> _EmptyRegistry:
+        return _EmptyRegistry()
+
+    def _async_entries_for_config_entry(_registry: Any, _entry_id: str) -> list:
+        return []
+
+    class IssueSeverity:
+        WARNING = "warning"
+        ERROR = "error"
+
+    issue_registry.IssueSeverity = IssueSeverity
+    issue_registry.async_create_issue = (
+        lambda *_args, **_kwargs: None
+    )
+    issue_registry.async_delete_issue = (
+        lambda *_args, **_kwargs: None
+    )
+    device_registry.DeviceEntry = object
+
+    entity_registry.async_get = _async_get
+    entity_registry.async_entries_for_config_entry = (
+        _async_entries_for_config_entry
+    )
     config_entries.ConfigEntry = object
     core.HomeAssistant = object
     core.ServiceCall = object
     exceptions.ConfigEntryError = ConfigEntryError
     exceptions.ConfigEntryNotReady = ConfigEntryNotReady
     exceptions.HomeAssistantError = HomeAssistantError
+    exceptions.ServiceValidationError = ServiceValidationError
     homeassistant.config_entries = config_entries
     homeassistant.core = core
     homeassistant.exceptions = exceptions
+    homeassistant.helpers = helpers
+    helpers.entity_registry = entity_registry
+    helpers.device_registry = device_registry
+    helpers.issue_registry = issue_registry
     sys.modules["homeassistant"] = homeassistant
     sys.modules["homeassistant.config_entries"] = config_entries
     sys.modules["homeassistant.core"] = core
     sys.modules["homeassistant.exceptions"] = exceptions
+    sys.modules["homeassistant.helpers"] = helpers
+    sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
+    sys.modules["homeassistant.helpers.device_registry"] = device_registry
+    sys.modules["homeassistant.helpers.issue_registry"] = issue_registry
 
     package = types.ModuleType(package_name)
     package.__path__ = [str(COMPONENT_ROOT)]
@@ -280,6 +345,7 @@ def _install_stubs(package_name: str) -> None:
     api_module = types.ModuleType(f"{package_name}.api")
     api_module.GritHubApiClient = FakeApi
     api_module.GritHubApiError = GritHubApiError
+    api_module.GritHubValidationError = GritHubApiError
     sys.modules[api_module.__name__] = api_module
 
     coordinator_module = types.ModuleType(f"{package_name}.coordinator")
@@ -301,6 +367,13 @@ def _load_runtime_module() -> types.ModuleType:
     const_module = importlib.util.module_from_spec(const_spec)
     sys.modules[const_spec.name] = const_module
     const_spec.loader.exec_module(const_module)
+
+    hub_spec = importlib.util.spec_from_file_location(
+        f"{package_name}.hub", COMPONENT_ROOT / "hub.py"
+    )
+    hub_module = importlib.util.module_from_spec(hub_spec)
+    sys.modules[hub_spec.name] = hub_module
+    hub_spec.loader.exec_module(hub_module)
 
     runtime_spec = importlib.util.spec_from_file_location(
         package_name, COMPONENT_ROOT / "__init__.py"
@@ -578,33 +651,47 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.hass.config_entries.forward_calls, 1)
         await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 
-    async def test_provisional_defaults_apply_without_stored_overrides(
+    async def test_legacy_blank_credentials_still_connect_and_are_flagged(
         self,
     ) -> None:
         data = valid_entry_data()
         data.pop(RUNTIME_MODULE.CONF_MQTT_USERNAME)
         data.pop(RUNTIME_MODULE.CONF_MQTT_PASSWORD)
         original = deepcopy(data)
+        created: list[tuple[Any, ...]] = []
 
-        entry = await self.setup_entry(data)
+        def _capture_create(*args: Any, **kwargs: Any) -> None:
+            created.append((args, kwargs))
+
+        with mock.patch.object(
+            RUNTIME_MODULE.ir,
+            "async_create_issue",
+            side_effect=_capture_create,
+        ), mock.patch.object(
+            RUNTIME_MODULE.ir,
+            "async_delete_issue",
+        ):
+            entry = await self.setup_entry(data)
         mqtt = entry.runtime_data.mqtt
 
         self.assertEqual(
             mqtt.username,
-            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
+            RUNTIME_MODULE._LEGACY_MQTT_USERNAME,
         )
         self.assertEqual(
             mqtt.password,
-            RUNTIME_MODULE.DEFAULT_MQTT_PASSWORD,
+            RUNTIME_MODULE._LEGACY_MQTT_PASSWORD,
         )
         self.assertEqual(entry.data, original)
         self.assertNotIn(
-            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
+            RUNTIME_MODULE._LEGACY_MQTT_USERNAME,
             repr(entry.data),
         )
-        self.assertNotIn(
-            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
-            repr(entry.runtime_data.coordinator.__dict__),
+        self.assertTrue(
+            any(
+                RUNTIME_MODULE.ISSUE_LEGACY_MQTT_CREDENTIAL in str(item)
+                for item in created
+            )
         )
         await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 

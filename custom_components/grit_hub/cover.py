@@ -7,7 +7,7 @@ import math
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import obj_id, obj_name
+from .api import obj_id
 from .const import (
     COVER_DEVICE_TYPES,
     DEVICE_CONFIRM_TIMEOUT,
@@ -43,7 +43,8 @@ class GritHubGateCover(GritHubEntity, CoverEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}"
-        self._attr_name = obj_name(device, "Gate")
+        # Primary entity: name comes from the device (avoids doubled object_ids).
+        self._attr_name = None
 
     @property
     def available(self):
