@@ -170,7 +170,14 @@ All selected participants must agree on `gls`. Unanimous one publishes Locked,
 unanimous zero publishes Unlocked, and complete selected-participant
 disagreement publishes Unknown. Malformed, incomplete, overflowing, timed-out,
 or unsettled evidence publishes no new authority and preserves the last valid
-state. REST `gritLockState` is never displayed.
+state. Participation for a settling burst is evaluated against the latest
+usable REST inventory at settle time (latest inventory wins).
+
+When displayed state is still unknown, a successful REST trigger inventory that
+carries agreeing boolean `gritLockState` for every `gritLockEnabled=true`
+participant may publish a labelled `rest_seed` observation. That seed is
+Hub-rest-derived display state only and cannot confirm a lock or unlock
+command. Device `/gl-d` and later device `/sts` evidence replace it.
 
 At startup or reconnect, the exact matching SUBACK opens one bounded
 connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
@@ -186,7 +193,11 @@ enter or delay the snapshot. Every valid observation restarts one 250 ms quiet
 boundary; unanimous or disagreeing evidence then publishes before the five-
 second window expires. Startup consensus publishes through the same latest-
 observation field as live `/gl-d`, but its
-`startup_status` source cannot confirm a command.
+`startup_status` source cannot confirm a command. After that window expires,
+later trigger `/sts` frames with strict `gls` may still publish
+`device_status` display state when live `/gl-d` authority is absent. The
+GRITLock entity stays available whenever Hub REST polling is succeeding, even
+while state is unknown.
 
 ### GRITLock commands and freshness
 
