@@ -14,7 +14,9 @@ from homeassistant.exceptions import (
     ConfigEntryNotReady,
     HomeAssistantError,
 )
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
 from .api import GritHubApiClient, GritHubApiError
 from .const import (
@@ -30,17 +32,19 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     CONF_VERIFY_SSL,
-    DEFAULT_MQTT_PASSWORD,
-    DEFAULT_MQTT_USERNAME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    ISSUE_HUB_VERSION_UNVERIFIED,
+    ISSUE_LEGACY_MQTT_CREDENTIAL,
     MAX_MQTT_HOST_LENGTH,
     MAX_MQTT_HUB_ID_LENGTH,
     MAX_MQTT_USERNAME_LENGTH,
     MQTT_READY_TIMEOUT,
     PLATFORMS,
+    VERIFIED_HUB_VERSION_LABEL,
 )
 from .coordinator import GritHubCoordinator
+from .hub import hub_version_is_verified, hub_version_label
 from .mqtt_live import GritLiveMqtt
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +57,12 @@ _MQTT_CONFIG_ERROR = (
     "MQTT configuration is invalid; reconfigure this GRIT Hub entry"
 )
 _MQTT_NOT_READY_ERROR = "MQTT connection is not ready"
+
+# Pre-0.2.0 installs could omit MQTT credentials and silently used this
+# fleet-wide vendor pair. Kept only for runtime compatibility of those entries;
+# never used by discovery or new config-flow probes.
+_LEGACY_MQTT_USERNAME = "grit-readonly"
+_LEGACY_MQTT_PASSWORD = "grit-readonly"
 
 # Removed in v0.2.0 (F11): Hub requireHumanAdmin routes always 403 for API tokens.
 _REMOVED_BUTTON_UNIQUE_IDS = frozenset(
@@ -75,6 +85,7 @@ class _MqttSettings:
     use_tls: bool
     verify_tls: bool
     keepalive: int
+    uses_legacy_credential: bool = False
 
 
 @dataclass(slots=True)
@@ -184,9 +195,18 @@ def _validate_mqtt_settings(
         password = password_value if password_value.strip() else None
     if password is not None and username is None:
         raise _invalid_mqtt_config()
+
+    uses_legacy_credential = False
     if username is None and password is None:
-        username = DEFAULT_MQTT_USERNAME
-        password = DEFAULT_MQTT_PASSWORD
+        # Pre-0.2.0 entries stored blank credentials and used the vendor pair.
+        username = _LEGACY_MQTT_USERNAME
+        password = _LEGACY_MQTT_PASSWORD
+        uses_legacy_credential = True
+    elif (
+        username == _LEGACY_MQTT_USERNAME
+        and password == _LEGACY_MQTT_PASSWORD
+    ):
+        uses_legacy_credential = True
 
     return _MqttSettings(
         host=host,
@@ -197,7 +217,55 @@ def _validate_mqtt_settings(
         use_tls=use_tls,
         verify_tls=verify_tls,
         keepalive=keepalive,
+        uses_legacy_credential=uses_legacy_credential,
     )
+
+
+def _async_update_repair_issues(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    uses_legacy_credential: bool,
+    hub_data: dict[str, Any] | None,
+) -> None:
+    """Create or clear non-fatal repair issues for this config entry."""
+    if uses_legacy_credential:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_LEGACY_MQTT_CREDENTIAL,
+            data={"entry_id": entry.entry_id},
+        )
+    else:
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+        )
+
+    if hub_version_is_verified(hub_data):
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+        )
+    else:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_HUB_VERSION_UNVERIFIED,
+            translation_placeholders={
+                "hub_version": hub_version_label(hub_data) or "unknown",
+                "verified_version": VERIFIED_HUB_VERSION_LABEL,
+            },
+            data={"entry_id": entry.entry_id},
+        )
 
 
 def _apply_mqtt_message(
@@ -449,6 +517,12 @@ async def async_setup_entry(
             "coordinator": coordinator
         }
         _remove_retired_button_entities(hass, entry)
+        _async_update_repair_issues(
+            hass,
+            entry,
+            uses_legacy_credential=settings.uses_legacy_credential,
+            hub_data=coordinator.hub_data,
+        )
         forwarding_started = True
         await hass.config_entries.async_forward_entry_setups(
             entry,
@@ -507,6 +581,46 @@ async def async_unload_entry(
         entries = hass.data.get(DOMAIN)
         if isinstance(entries, dict):
             entries.pop(entry.entry_id, None)
+    return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow manual removal of devices absent from the last complete inventory.
+
+    Automatic pruning is not implemented. Returns False while a device is still
+    present in the last successful complete Hub inventory, or when inventory
+    completeness is unknown.
+    """
+    grit_identifiers: set[tuple[str, str]] = set()
+    for identifier in device_entry.identifiers:
+        if not isinstance(identifier, tuple) or not identifier:
+            continue
+        if identifier[0] != DOMAIN:
+            continue
+        if len(identifier) == 2 and identifier[1] == "hub":
+            return False
+        if len(identifier) == 3:
+            device_type, device_id = identifier[1], identifier[2]
+            if isinstance(device_type, str) and isinstance(device_id, str):
+                grit_identifiers.add((device_type, device_id))
+    if not grit_identifiers:
+        return False
+
+    runtime = getattr(config_entry, "runtime_data", None)
+    coordinator = getattr(runtime, "coordinator", None)
+    if coordinator is None:
+        stored = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+        if isinstance(stored, dict):
+            coordinator = stored.get("coordinator")
+    inventory = getattr(coordinator, "last_complete_inventory", None)
+    if inventory is None:
+        return False
+    if any(ident in inventory for ident in grit_identifiers):
+        return False
     return True
 
 

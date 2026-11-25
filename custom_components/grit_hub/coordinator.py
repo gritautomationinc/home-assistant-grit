@@ -63,7 +63,6 @@ _FIELD_OBSERVATIONS_KEY = "_field_observations"
 _RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector")
 _STARTUP_TELEMETRY_DEVICE_TYPES = ("gate", "rfid", "trigger")
 _COMMAND_STATE_FIELDS = {"gate": "open"}
-_LIVE_STATE_FIELDS = {"gate": ("position", "open")}
 _GATE_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _GRITLOCK_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _RECONCILIATION_CONCURRENCY = 4
@@ -444,37 +443,9 @@ def _preserve_mqtt_state(
             if state is not None:
                 refreshed[MQTT_STATE_KEY] = state
 
-        live_fields = _LIVE_STATE_FIELDS.get(device_type)
-        if live_fields is None:
-            continue
-        for previous in previous_collection:
-            if not isinstance(previous, dict):
-                continue
-            state = _sanitize_mqtt_state(previous.get(MQTT_STATE_KEY))
-            if state is None or not any(
-                field in state for field in live_fields
-            ):
-                continue
-            unique_ids = {
-                identifier
-                for identifier in _device_identifiers(previous)
-                if previous_counts[identifier] == 1
-            }
-            if not unique_ids or any(
-                refreshed_counts[identifier] > 0
-                for identifier in unique_ids
-            ):
-                continue
-
-            preserved: dict[str, Any] = {}
-            for key in _IDENTIFIER_KEYS:
-                identifier = _normalize_identifier(previous.get(key))
-                if identifier in unique_ids:
-                    preserved[key] = identifier
-            if not preserved:
-                continue
-            preserved[MQTT_STATE_KEY] = state
-            refreshed_collection.append(preserved)
+        # Do not re-append devices omitted from a successful REST inventory.
+        # Manual device removal (async_remove_config_entry_device) depends on
+        # REST-deleted identities staying absent from coordinator data.
 
 
 def _payload_state(
@@ -599,6 +570,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._rfid_event_in_flight: set[str] = set()
         self._rfid_event_trailing: set[str] = set()
         self._mqtt_state_waiters: set[asyncio.Future[None]] = set()
+        self._last_complete_inventory: frozenset[tuple[str, str]] | None = None
         self._expected_mqtt_hub_id = (
             None
             if expected_mqtt_hub_id is None
@@ -609,6 +581,14 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and self._expected_mqtt_hub_id is None
         ):
             raise ValueError("expected MQTT hub identifier is invalid")
+
+    @property
+    def last_complete_inventory(self) -> frozenset[tuple[str, str]] | None:
+        """Return (device_type, device_id) pairs from the last complete inventory.
+
+        None means no successful complete Hub inventory has been observed yet.
+        """
+        return self._last_complete_inventory
 
     @property
     def mqtt_connected(self) -> bool:
@@ -2970,6 +2950,28 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._gritlock_update_sequence = refresh_sequence
             # Seed only from a successful trigger inventory read.
             self._maybe_seed_gritlock_state_from_rest(devices=data["devices"])
+
+        collection_errors = {
+            key
+            for key in data["errors"]
+            if isinstance(key, str) and key in DEVICE_TYPES
+        }
+        if not collection_errors:
+            inventory: set[tuple[str, str]] = set()
+            for device_type, collection in data["devices"].items():
+                if (
+                    not isinstance(device_type, str)
+                    or device_type not in DEVICE_TYPES
+                    or not isinstance(collection, list)
+                ):
+                    continue
+                for device in collection:
+                    if not isinstance(device, dict):
+                        continue
+                    for identifier in _device_identifiers(device):
+                        inventory.add((device_type, identifier))
+            self._last_complete_inventory = frozenset(inventory)
+
         return data
 
     def handle_mqtt_message(

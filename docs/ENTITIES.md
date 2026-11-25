@@ -192,6 +192,12 @@ Entity attributes are limited to the integration's small scalar allowlist; raw
 REST objects, raw MQTT payloads, complete topics, and error responses are not
 exposed.
 
+## Device removal
+
+Stale devices that are absent from the last successful complete Hub inventory
+may be removed manually in Home Assistant. Devices still present in that
+inventory cannot be removed. There is no automatic prune option.
+
 ## Services
 
 `grit_hub.device_command`, `grit_hub.refresh_device`, and

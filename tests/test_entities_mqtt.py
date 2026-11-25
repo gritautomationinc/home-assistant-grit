@@ -1869,14 +1869,10 @@ class EntityMqttTests(unittest.TestCase):
         )
         for excluded in (
             sensitive,
-            CONST_MODULE.DEFAULT_MQTT_USERNAME,
-            CONST_MODULE.DEFAULT_MQTT_PASSWORD,
+            "grit-readonly",
         ):
             self.assertNotIn(excluded, exposed)
-        self.assertNotIn(
-            CONST_MODULE.DEFAULT_MQTT_USERNAME,
-            repr(self.coordinator.data),
-        )
+        self.assertNotIn("grit-readonly", repr(self.coordinator.data))
         for entity in (internet, buttons, ip_sensor, version, branch):
             self.assertFalse(hasattr(entity, "extra_state_attributes"))
 

@@ -1625,7 +1625,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             first_generation,
         )
         self.assertIn("rfid_state", failed_refresh["errors"])
-    async def test_successful_rest_omission_preserves_only_mqtt_gate_device(self):
+    async def test_successful_rest_omission_does_not_reappend_mqtt_gate(self):
         api = FakeApi({"gate": [], "rfid": []})
         instance = self.coordinator(api)
         self.assertTrue(
@@ -1649,17 +1649,12 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
         refreshed = await instance._async_update_data()
 
-        self.assertEqual(len(refreshed["devices"]["gate"]), 1)
+        self.assertEqual(refreshed["devices"]["gate"], [])
         self.assertEqual(refreshed["devices"]["rfid"], [])
-        gate = refreshed["devices"]["gate"][0]
-        self.assertEqual(
-            set(gate),
-            {"id", coordinator_module.MQTT_STATE_KEY},
-        )
-        self.assertTrue(gate[coordinator_module.MQTT_STATE_KEY]["open"])
-        self.assertEqual(
-            gate[coordinator_module.MQTT_STATE_KEY]["position"],
-            90,
+        self.assertIsNotNone(instance.last_complete_inventory)
+        self.assertNotIn(
+            ("gate", "device-gate"),
+            instance.last_complete_inventory,
         )
     async def test_targeted_reconciliation_preserves_gate_mqtt_state(self):
         api = FakeApi()

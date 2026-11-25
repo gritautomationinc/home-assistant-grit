@@ -28,9 +28,7 @@ from .const import (
     CONF_TOKEN,
     CONF_VERIFY_SSL,
     DEFAULT_MQTT_KEEPALIVE,
-    DEFAULT_MQTT_PASSWORD,
     DEFAULT_MQTT_PORT,
-    DEFAULT_MQTT_USERNAME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_MQTT_HOST_LENGTH,
@@ -258,6 +256,23 @@ def _normalize_config(
         password = stored if isinstance(stored, str) else None
     else:
         password = None
+    # New installs always require credentials. Reconfigure may retain a legacy
+    # blank pair already stored on the entry, but cannot clear or leave a
+    # username without a password.
+    if username is None or password is None:
+        legacy_blank = (
+            existing is not None
+            and stored_username is None
+            and not isinstance(existing.get(CONF_MQTT_PASSWORD), str)
+        )
+        if not legacy_blank or username is not None or password is not None:
+            if username is None:
+                raise _InputError(
+                    CONF_MQTT_USERNAME, "mqtt_credentials_required"
+                )
+            raise _InputError(
+                CONF_MQTT_PASSWORD, "mqtt_credentials_required"
+            )
     normalized[CONF_MQTT_USERNAME] = username
     normalized[CONF_MQTT_PASSWORD] = password
 
@@ -419,12 +434,19 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         config: dict[str, Any],
     ) -> bool:
-        """Require one bounded connection and exact successful subscription."""
+        """Require one bounded connection and exact successful subscription.
+
+        Never probes with a built-in password. Missing credentials fail closed.
+        """
         username = config.get(CONF_MQTT_USERNAME)
         password = config.get(CONF_MQTT_PASSWORD)
-        if username is None and password is None:
-            username = DEFAULT_MQTT_USERNAME
-            password = DEFAULT_MQTT_PASSWORD
+        if (
+            not isinstance(username, str)
+            or not username
+            or not isinstance(password, str)
+            or not password
+        ):
+            return False
 
         cancel_event = threading.Event()
         try:
@@ -479,15 +501,13 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pending_api = api_config
         self._advanced_defaults = defaults
 
+        # Never probe MQTT with a built-in password. Collect explicit credentials
+        # via the advanced form (or broker host first when the API omitted it).
         if rest.hub_id is None:
             return self._show_advanced_form()
         if rest.host is None:
             return await self.async_step_mqtt_broker()
-        if await self._async_validate_mqtt({**api_config, **defaults}):
-            return await self.async_step_confirm()
-        return self._show_advanced_form(
-            {"base": "mqtt_cannot_connect"}
-        )
+        return self._show_advanced_form()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -549,21 +569,23 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             combined = {**self._pending_api, **self._advanced_defaults}
             combined[CONF_MQTT_HOST] = user_input.get(CONF_MQTT_HOST)
             try:
-                normalized = _normalize_config(combined)
+                # Validate host only; credentials are collected next.
+                host = _text(
+                    combined,
+                    CONF_MQTT_HOST,
+                    MAX_MQTT_HOST_LENGTH,
+                    "invalid_mqtt_host",
+                )
+                if (
+                    any(char.isspace() for char in host)
+                    or any(char in host for char in "/\\")
+                ):
+                    raise _InputError(CONF_MQTT_HOST, "invalid_mqtt_host")
             except _InputError as err:
                 errors[err.field] = err.code
             else:
-                self._advanced_defaults[CONF_MQTT_HOST] = normalized[
-                    CONF_MQTT_HOST
-                ]
-                if await self._async_validate_mqtt(normalized):
-                    return self.async_create_entry(
-                        title="GRIT Hub",
-                        data=normalized,
-                    )
-                return self._show_advanced_form(
-                    {"base": "mqtt_cannot_connect"}
-                )
+                self._advanced_defaults[CONF_MQTT_HOST] = host
+                return self._show_advanced_form()
 
         return self.async_show_form(
             step_id="mqtt_broker",
@@ -574,25 +596,11 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
     ):
+        # Confirm without credentials is no longer used; keep the step as a
+        # redirect to advanced MQTT credential collection.
         if self._pending_api is None:
             return await self.async_step_user()
-        if user_input is not None:
-            if user_input.get(_CONF_SHOW_ADVANCED) is True:
-                return await self.async_step_advanced()
-            combined = {**self._pending_api, **self._advanced_defaults}
-            normalized = _normalize_config(combined)
-            return self.async_create_entry(title="GRIT Hub", data=normalized)
-
-        return self.async_show_form(
-            step_id="confirm",
-            data_schema=vol.Schema(
-                {vol.Optional(_CONF_SHOW_ADVANCED, default=False): bool}
-            ),
-            description_placeholders={
-                "mqtt_host": self._advanced_defaults[CONF_MQTT_HOST],
-                "mqtt_hub_id": self._advanced_defaults[CONF_MQTT_HUB_ID],
-            },
-        )
+        return await self.async_step_advanced()
 
     async def async_step_advanced(
         self, user_input: dict[str, Any] | None = None

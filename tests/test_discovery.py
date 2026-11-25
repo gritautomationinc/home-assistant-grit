@@ -298,8 +298,8 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         started = time.monotonic()
         result, client = self.run_probe(
             scenario,
-            username=CONST.DEFAULT_MQTT_USERNAME,
-            password=CONST.DEFAULT_MQTT_PASSWORD,
+            username="fabricated-user",
+            password="fabricated-password",
         )
         elapsed = time.monotonic() - started
         self.assertEqual(result, DISCOVERY.MqttProbeResult(True, HUB_ID))
@@ -314,8 +314,8 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
             client.username_calls,
             [
                 (
-                    CONST.DEFAULT_MQTT_USERNAME,
-                    CONST.DEFAULT_MQTT_PASSWORD,
+                    "fabricated-user",
+                    "fabricated-password",
                 )
             ],
         )
