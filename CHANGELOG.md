@@ -3,10 +3,9 @@
 All notable project changes are recorded here. This project uses semantic
 versioning for public releases.
 
-## 0.2.0 — prepared
+## 0.2.0 — 2026-11-25
 
-Prepared release for GRIT Hub v1.1.1197 compatibility and safe state authority.
-Not tagged or published yet.
+Release for GRIT Hub v1.1.1197 compatibility and safe state authority.
 
 ### Finding → ticket map
 
