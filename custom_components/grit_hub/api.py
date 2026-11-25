@@ -10,7 +10,7 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .auth import bearer_authorization_value, validate_bearer_token
-from .const import REST_DISCOVERY_TIMEOUT
+from .const import DEVICE_TYPES, REST_DISCOVERY_TIMEOUT
 from .hub import normalize_hub_id, sanitize_hub_data
 
 
@@ -221,11 +221,22 @@ class GritHubApiClient:
         if not isinstance(response, dict) or response.get("success") is not True:
             raise GritHubApiError("Telemetry refresh request failed")
 
-    async def set_device_state(self, device_type: str, device_id: str | int, on: bool) -> Any:
+    async def set_device_state(
+        self, device_type: str, device_id: str | int, on: bool
+    ) -> Any:
+        normalized_type = _normalize_path_component(device_type, label="Device type")
+        if normalized_type not in DEVICE_TYPES:
+            raise GritHubApiError("Device type is invalid")
+        normalized_id = _normalize_path_component(
+            device_id, label="Device identifier"
+        )
         value = "true" if on else "false"
         # Most controllable GRIT devices use state/{onOff}. Some endpoints use
         # a semantic open boolean; the caller maps that for covers.
-        return await self.request("PUT", f"/api/{quote(device_type)}/{quote(str(device_id))}/state/{value}")
+        return await self.request(
+            "PUT",
+            f"/api/{quote(normalized_type, safe='')}/{quote(normalized_id, safe='')}/state/{value}",
+        )
 
     async def call_command(
         self,
@@ -235,16 +246,62 @@ class GritHubApiClient:
         action: str,
         remote_type: str = "api",
     ) -> Any:
+        normalized_type = _normalize_path_component(device_type, label="Device type")
+        if normalized_type not in DEVICE_TYPES:
+            raise GritHubApiError("Device type is invalid")
+        normalized_id = _normalize_path_component(device_id, label="Device identifier")
+        normalized_command = _normalize_path_component(
+            command_name, label="Command name"
+        )
+        normalized_action = _normalize_path_component(action, label="Action")
+        normalized_remote = _normalize_path_component(
+            remote_type, label="Remote type"
+        )
         return await self.request(
             "PUT",
-            f"/api/command/{quote(device_type)}/{quote(str(device_id))}/{quote(command_name)}/{quote(action)}/{quote(remote_type)}",
+            "/api/command/"
+            f"{quote(normalized_type, safe='')}/"
+            f"{quote(normalized_id, safe='')}/"
+            f"{quote(normalized_command, safe='')}/"
+            f"{quote(normalized_action, safe='')}/"
+            f"{quote(normalized_remote, safe='')}",
         )
 
     async def refresh_device(self, device_type: str, device_id: str | int) -> Any:
-        return await self.request("GET", f"/api/device/refresh/{quote(device_type)}/{quote(str(device_id))}")
+        normalized_type = _normalize_path_component(device_type, label="Device type")
+        if normalized_type not in DEVICE_TYPES:
+            raise GritHubApiError("Device type is invalid")
+        normalized_id = _normalize_path_component(device_id, label="Device identifier")
+        return await self.request(
+            "GET",
+            f"/api/device/refresh/{quote(normalized_type, safe='')}/{quote(normalized_id, safe='')}",
+        )
 
     async def locate_device(self, device_type: str, device_id: str | int) -> Any:
-        return await self.request("GET", f"/api/device/locate/{quote(device_type)}/{quote(str(device_id))}")
+        normalized_type = _normalize_path_component(device_type, label="Device type")
+        if normalized_type not in DEVICE_TYPES:
+            raise GritHubApiError("Device type is invalid")
+        normalized_id = _normalize_path_component(device_id, label="Device identifier")
+        return await self.request(
+            "GET",
+            f"/api/device/locate/{quote(normalized_type, safe='')}/{quote(normalized_id, safe='')}",
+        )
+
+
+def _normalize_path_component(
+    value: str | int,
+    *,
+    label: str,
+) -> str:
+    normalized = str(value).strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or len(normalized) > 128
+        or not normalized.isprintable()
+    ):
+        raise GritHubApiError(f"{label} is invalid")
+    return normalized
 
 
 def endpoint_identifier(path: str) -> str:

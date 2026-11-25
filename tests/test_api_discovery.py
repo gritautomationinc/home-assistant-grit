@@ -630,6 +630,47 @@ class ApiHubTests(unittest.TestCase):
                     )
         client.request.assert_not_awaited()
 
+    def test_call_command_url_encodes_path_segments(self):
+        captured: dict[str, str] = {}
+
+        async def request(method, path, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            return {}
+
+        client = self.client()
+        client.request = request
+
+        asyncio.run(
+            client.call_command(
+                "gate",
+                "device/with/slash",
+                "cmd/with/slash",
+                "press/now",
+                "api",
+            )
+        )
+        self.assertEqual(captured["method"], "PUT")
+        self.assertEqual(
+            captured["path"],
+            "/api/command/gate/device%2Fwith%2Fslash/cmd%2Fwith%2Fslash/press%2Fnow/api",
+        )
+
+    def test_call_command_rejects_unknown_device_type(self):
+        client = self.client()
+        client.request = mock.AsyncMock()
+        with self.assertRaises(API.GritHubApiError):
+            asyncio.run(
+                client.call_command(
+                    "not-a-device-type",
+                    "device-one",
+                    "cmd",
+                    "press",
+                    "api",
+                )
+            )
+        client.request.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()
