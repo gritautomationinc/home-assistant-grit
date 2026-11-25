@@ -1,0 +1,52 @@
+{
+  "_comment": "Representative device state shapes consumed by bool_state (switch inventory and individual detail: state / on / status). Nested dict forms are treated as equivalent to flattened string/bool forms. Not a Hub contract fixture: Hub file:line citations await Hub source access.",
+  "cases": [
+    {
+      "id": "bool_state_true",
+      "shapes": [
+        {"state": true},
+        {"state": "on"},
+        {"state": "true"},
+        {"state": "1"},
+        {"on": true},
+        {"on": "on"},
+        {"state": {"on": true}},
+        {"state": {"on": "1"}}
+      ],
+      "expected": true
+    },
+    {
+      "id": "bool_state_false",
+      "shapes": [
+        {"state": false},
+        {"state": "off"},
+        {"state": "false"},
+        {"state": "0"},
+        {"on": false},
+        {"on": "off"},
+        {"state": {"on": false}},
+        {"state": {"on": "0"}}
+      ],
+      "expected": false
+    },
+    {
+      "id": "bool_state_unknown",
+      "shapes": [
+        {},
+        {"state": "maybe"},
+        {"state": {"nested": "weird"}},
+        {"state": ["on"]},
+        {"unrelated": true}
+      ],
+      "expected": null
+    },
+    {
+      "id": "bool_state_precedence_on_over_state",
+      "shapes": [
+        {"on": true, "state": false},
+        {"on": "on", "state": "off"}
+      ],
+      "expected": true
+    }
+  ]
+}

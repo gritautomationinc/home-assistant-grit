@@ -6,7 +6,7 @@ import asyncio
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import GritHubApiError, bool_state, obj_id, obj_name
+from .api import bool_state, obj_id
 from .const import (
     DEVICE_CONFIRM_TIMEOUT,
     DOMAIN,
@@ -30,7 +30,8 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         super().__init__(coordinator, device_type, device)
         ident = obj_id(device)
         self._attr_unique_id = f"grit_hub_{device_type}_{ident}"
-        self._attr_name = obj_name(device, device_type.title())
+        # Primary entity: name comes from the device (avoids doubled object_ids).
+        self._attr_name = None
         self._attr_icon = "mdi:electric-switch"
 
     @property
@@ -60,37 +61,36 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs):
         await self._async_set_state(False)
 
-    def _observed_state(self) -> bool | None:
-        observed = self.current_device_observation
-        if observed is None:
-            return None
-        return bool_state(observed)
-
     async def _async_set_state(self, state: bool) -> None:
         if self.device_type == "collector":
             await self._async_set_collector_state(state)
             return
 
-        confirmation_generation = self.coordinator.refresh_sequence
+        # Solenoid / latch / powerbank: confirm from device-originated MQTT
+        # (st / sts), not Hub REST inventory echo (AC2 / ADR 0001).
+        if not self.coordinator.mqtt_connected:
+            raise HomeAssistantError("Device state could not be confirmed")
+        confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_device_state(
                 self.device_type,
                 self._device_id,
                 state,
             )
-            await asyncio.wait_for(
-                self.coordinator.async_request_refresh(),
+            confirmed = await self.coordinator.async_confirm_device_state(
+                self.device_type,
+                self._device_id,
+                state,
+                after_sequence=confirmation_boundary,
                 timeout=DEVICE_CONFIRM_TIMEOUT,
             )
-        except (GritHubApiError, asyncio.TimeoutError) as err:
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
             raise HomeAssistantError(
                 "Device state could not be confirmed"
             ) from err
-        if (
-            not self.coordinator.last_update_success
-            or self.coordinator.refresh_sequence <= confirmation_generation
-            or self._observed_state() is not state
-        ):
+        if not confirmed:
             raise HomeAssistantError("Device state could not be confirmed")
 
     async def _async_set_collector_state(self, state: bool) -> None:

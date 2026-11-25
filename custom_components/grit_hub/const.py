@@ -5,10 +5,6 @@ DOMAIN = "grit_hub"
 DEFAULT_NAME = "GRIT Hub"
 DEFAULT_MQTT_PORT = 1883
 DEFAULT_MQTT_KEEPALIVE = 60
-# Narrow exception: provisional vendor-default read-only credentials pending
-# confirmation from GRIT's author. Never place installation credentials here.
-DEFAULT_MQTT_USERNAME = "grit-readonly"
-DEFAULT_MQTT_PASSWORD = "grit-readonly"
 
 MAX_MQTT_HOST_LENGTH = 253
 MAX_MQTT_HUB_ID_LENGTH = 128
@@ -19,6 +15,13 @@ REST_DISCOVERY_TIMEOUT = 5
 HUB_CONFIRM_TIMEOUT = 30.0
 DEVICE_CONFIRM_TIMEOUT = 30.0
 DEFAULT_SCAN_INTERVAL = 30
+
+# Hub release this integration version was verified against (warn, do not refuse).
+VERIFIED_HUB_VERSION = (1, 1, 1197)
+VERIFIED_HUB_VERSION_LABEL = "1.1.1197"
+
+ISSUE_LEGACY_MQTT_CREDENTIAL = "legacy_mqtt_credential"
+ISSUE_HUB_VERSION_UNVERIFIED = "hub_version_unverified"
 
 CONF_BASE_URL = "base_url"
 CONF_TOKEN = "token"
@@ -65,6 +68,10 @@ DEVICE_TYPES = [
 SWITCH_DEVICE_TYPES = ["solenoid", "latch", "collector", "powerbank"]
 COVER_DEVICE_TYPES = ["gate"]
 SENSOR_DEVICE_TYPES = ["airquality", "presence", "pressure", "dustbin", "magswipe", "scanner", "trigger", "xtndr"]
+
+# remoteType values accepted by grit_hub.device_command for v0.2.0.
+# Expand only with evidence from a verified Hub tag (Held for Joel if more needed).
+REMOTE_TYPES = frozenset({"api"})
 
 # Imported/generated from the source Swagger/OpenAPI catalogue. It is retained
 # for reference only and is not exposed through a general endpoint service.

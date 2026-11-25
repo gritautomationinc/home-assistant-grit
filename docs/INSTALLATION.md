@@ -69,19 +69,17 @@ The normal flow applies these internal defaults:
 | Verify MQTT certificate | On when TLS is used |
 | MQTT keepalive | `60` seconds |
 | REST interval | `30` seconds |
-| MQTT credentials | Provisional vendor-default read-only values |
 
-The provisional MQTT credential pair is centralized in source and pending
-confirmation from GRIT's author. It is not displayed on the normal flow. Use
-Advanced settings for an installation-specific least-privilege override.
+MQTT username and password are required. Copy the Hub's per-hub read-only MQTT
+credential. Setup does not probe with a built-in shared password.
 
 Setup is bounded and fail closed. It does not publish, operate hardware, scan
 hosts or ports, retry in the background, or guess another endpoint.
 
-## Advanced settings
+## Advanced / MQTT settings
 
-Choose Advanced when automatic validation fails or when the installation uses
-non-default settings. Available overrides are:
+After API authentication, setup asks for MQTT settings when credentials are
+needed (always for new installs). Available fields are:
 
 - REST interval;
 - MQTT broker host and port;
@@ -90,9 +88,8 @@ non-default settings. Available overrides are:
 - MQTT TLS and certificate verification;
 - MQTT keepalive.
 
-Leave both MQTT credential fields blank to use the provisional defaults. An
-override password requires an override username. Prefer TLS with certificate
-verification whenever broker traffic crosses an untrusted network.
+Prefer TLS with certificate verification whenever broker traffic crosses an
+untrusted network.
 
 ## Verify the installation
 

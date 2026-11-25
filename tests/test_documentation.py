@@ -28,9 +28,12 @@ REQUIRED_FILES = (
     "docs/ACCEPTANCE_REPORT_v0.1.0.md",
     "docs/ACCEPTANCE_REPORT_v0.1.1.md",
     "docs/ACCEPTANCE_REPORT_v0.1.2.md",
+    "docs/ACCEPTANCE_REPORT_v0.2.0.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/RELEASE_CHECKLIST_v0.1.1.md",
     "docs/RELEASE_CHECKLIST_v0.1.2.md",
+    "docs/RELEASE_CHECKLIST_v0.2.0.md",
+    "docs/COMPATIBILITY.md",
     "docs/REPOSITORY_TRANSFER.md",
     "docs/REPOSITORY_METADATA.md",
 )
@@ -72,6 +75,31 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIsNone(TOKEN_PATTERN.search(text))
                 self.assertIsNone(LIVE_ID_PATTERN.search(text))
 
+    def test_readme_notice_section_is_present(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        notice = (
+            "## Notice\n"
+            "\n"
+            "This is a community-maintained, unofficial Home Assistant "
+            "integration for GRIT Hub. It is published by GRIT Automation, "
+            "Inc. as a convenience.\n"
+            "\n"
+            "It is provided AS IS, without warranty of any kind. GRIT "
+            "Automation, Inc. does not provide support for it and does not "
+            "guarantee updates, fixes, compatibility with any Home Assistant "
+            "or GRIT Hub version, or continued availability. Use at your own "
+            "risk.\n"
+            "\n"
+            "Issues and pull requests are welcome, but may not be answered.\n"
+        )
+        self.assertIn(notice, readme)
+        self.assertNotIn(
+            "is not affiliated with, endorsed by, or supported by GRIT "
+            "or GRIT Automation",
+            readme,
+        )
+        self.assertIn("GRIT Automation, Inc.", readme)
+
     def test_release_status_and_version_are_consistent(self) -> None:
         manifest = json.loads(
             (ROOT / "custom_components/grit_hub/manifest.json").read_text(
@@ -84,89 +112,78 @@ class DocumentationTests(unittest.TestCase):
         acceptance_v011 = (
             ROOT / "docs/ACCEPTANCE_REPORT_v0.1.1.md"
         ).read_text(encoding="utf-8")
+        acceptance_v020 = (
+            ROOT / "docs/ACCEPTANCE_REPORT_v0.2.0.md"
+        ).read_text(encoding="utf-8")
+        checklist_v020 = (
+            ROOT / "docs/RELEASE_CHECKLIST_v0.2.0.md"
+        ).read_text(encoding="utf-8")
+        compatibility = (ROOT / "docs/COMPATIBILITY.md").read_text(
+            encoding="utf-8"
+        )
         acceptance_v012 = (
             ROOT / "docs/ACCEPTANCE_REPORT_v0.1.2.md"
         ).read_text(encoding="utf-8")
-        acceptance_v012_flat = " ".join(acceptance_v012.split())
         checklist_v011 = (
             ROOT / "docs/RELEASE_CHECKLIST_v0.1.1.md"
         ).read_text(encoding="utf-8")
         checklist_v012 = (
             ROOT / "docs/RELEASE_CHECKLIST_v0.1.2.md"
         ).read_text(encoding="utf-8")
-        release_url = (
-            "https://github.com/gritautomationinc/"
-            "home-assistant-grit/releases/tag/v0.1.1"
-        )
-        accepted_commit = "52d94f64a8ac570f187ffa4428d61a3db7163cf7"
 
-        self.assertEqual(manifest["version"], "0.1.2")
+        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["iot_class"], "local_push")
+        self.assertEqual(manifest["requirements"], ["paho-mqtt>=2.1.0,<3"])
         self.assertIn(
-            "`v0.1.2` is the latest prepared release and is ready for "
-            "publication after successful two-system live acceptance",
+            "`v0.2.0` is the latest prepared release",
             readme_flat,
         )
         self.assertIn("It is not yet tagged or published", readme_flat)
-        self.assertIn("published `v0.1.1` release is superseded", readme_flat)
         self.assertIn("remains a HACS Custom Repository", readme_flat)
-        self.assertIn(release_url, readme)
 
+        self.assertIn("## 0.2.0 — prepared", changelog)
         self.assertIn("## 0.1.2 — 2026-08-06", changelog)
         self.assertNotIn("## Unreleased", changelog)
         for expected in (
-            "one continuous immutable observed-state channel",
-            "fresh matching post-command `/gl` observation",
-            "Dion's mixed `gte=1` Lock",
-            "Jeff's all-`gte=0` Lock and Unlock pattern",
-            "Preserved gate startup hydration and RFID startup/detail authority",
+            "Stop shipping default MQTT password",
+            "Manual stale-device removal",
+            "Hub version repair",
+            "RFID `sts` refresh",
         ):
             self.assertIn(expected, changelog)
 
-        self.assertIn(accepted_commit, acceptance_v012)
-        self.assertIn("## Dion installation acceptance", acceptance_v012)
-        self.assertIn("## Jeff installation acceptance", acceptance_v012)
-        self.assertIn("406 unit tests passed", acceptance_v012)
+        self.assertIn("manifest is prepared at version `0.2.0`", acceptance_v020)
         self.assertIn(
-            "1 optional real-Paho smoke test was skipped as expected",
-            acceptance_v012,
+            "No `v0.2.0` tag or GitHub release exists yet",
+            " ".join(acceptance_v020.split()),
         )
-        self.assertIn("HACS validation passed", acceptance_v012)
-        self.assertIn("Hassfest validation passed", acceptance_v012)
-        self.assertIn("manifest is prepared at version `0.1.2`", acceptance_v012)
-        self.assertIn(
-            "separate propagation-reliability issue",
-            acceptance_v012_flat,
-        )
-        self.assertIn(
-            "no `v0.1.2` tag or GitHub release exists yet",
-            acceptance_v012_flat,
-        )
-
-        self.assertIn("Manifest version is exactly `0.1.2`", checklist_v012)
-        self.assertIn(
-            "- [ ] Working tree clean at the final release commit",
-            checklist_v012,
-        )
-        self.assertIn("- [x] HACS validation passed", checklist_v012)
-        self.assertIn("- [x] Hassfest validation passed", checklist_v012)
-        for pending_item in (
-            "- [ ] Final release commit selected and verified",
-            "- [ ] `v0.1.2` tag pushed to the configured origin",
-            "- [ ] GitHub release `v0.1.2` created",
-            "- [ ] Post-release HACS Custom Repository install/update verified",
-            "- [ ] Final corrective issue closeout completed",
-        ):
-            self.assertIn(pending_item, checklist_v012)
+        self.assertIn("Manifest version is exactly `0.2.0`", checklist_v020)
+        self.assertIn("v1.1.1197", compatibility)
+        self.assertIn("2026.11.1", compatibility)
 
         self.assertIn("published but superseded", checklist_v011)
         self.assertIn("ACCEPTANCE_REPORT_v0.1.2.md", acceptance_v011)
         self.assertIn("RELEASE_CHECKLIST_v0.1.2.md", acceptance_v011)
-        self.assertIn("52d94f64a8ac570f187ffa4428d61a3db7163cf7", checklist_v011)
+        self.assertIn("Manifest version is exactly `0.1.2`", checklist_v012)
+        self.assertIn("manifest is prepared at version `0.1.2`", acceptance_v012)
 
         combined = "\n".join(
-            (readme, changelog, acceptance_v011, acceptance_v012, checklist_v012)
+            (
+                readme,
+                changelog,
+                acceptance_v020,
+                checklist_v020,
+                acceptance_v011,
+                acceptance_v012,
+                checklist_v012,
+            )
         )
         for false_claim in (
+            "v0.2.0 was published",
+            "v0.2.0 has been published",
+            "- [x] `v0.2.0` tag pushed",
+            "- [x] GitHub release `v0.2.0` created",
+            "releases/tag/v0.2.0",
             "v0.1.2 was published",
             "v0.1.2 has been published",
             "- [x] `v0.1.2` tag pushed",
@@ -395,12 +412,18 @@ class DocumentationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("one latest immutable GRITLock state observation", architecture)
-        self.assertIn("If one or more fresh observations have `gte=1`", architecture)
+        self.assertIn(
+            "Otherwise, if one or more fresh observations have `gle=1`",
+            architecture,
+        )
         self.assertIn(
             "every fresh observed trigger participates",
             " ".join(architecture.split()),
         )
-        self.assertIn("sparse valid one-frame burst", architecture)
+        self.assertIn(
+            "sparse valid one-frame burst",
+            architecture.replace("\n", " "),
+        )
         self.assertIn(
             "only when every member is represented by current valid `gls`",
             " ".join(architecture.split()),
@@ -413,8 +436,8 @@ class DocumentationTests(unittest.TestCase):
             "Every valid observation restarts one 250 ms quiet", architecture
         )
         self.assertIn(
-            "REST `gritLockEnabled` metadata does not mutate or redefine",
-            architecture,
+            "(`gritLockEnabled=true`), only those triggers participate, and a burst settles",
+            " ".join(architecture.split()),
         )
         self.assertIn(
             "`gls=0` is unlocked (`False`)",
@@ -422,7 +445,10 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertIn("exact `False` is authority, not", " ".join(entities.split()))
         self.assertIn("including a sparse one-frame burst", entities)
-        self.assertIn("all-`gte=0` burst uses all fresh", troubleshooting)
+        self.assertIn(
+            "all-`gle=0` (or missing `gle`) burst uses all fresh",
+            troubleshooting,
+        )
         self.assertIn("mixed burst uses exactly", " ".join(troubleshooting.split()))
         self.assertIn("preserves an earlier valid state", troubleshooting)
         self.assertIn("No-op requests still send REST", entities)
