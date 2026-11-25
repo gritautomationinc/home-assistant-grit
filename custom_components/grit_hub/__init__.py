@@ -13,9 +13,13 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
     HomeAssistantError,
+    ServiceValidationError,
 )
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
-from .api import GritHubApiClient, GritHubApiError
+from .api import GritHubApiClient, GritHubApiError, GritHubValidationError
 from .const import (
     CONF_BASE_URL,
     CONF_MQTT_HOST,
@@ -29,17 +33,21 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     CONF_VERIFY_SSL,
-    DEFAULT_MQTT_PASSWORD,
-    DEFAULT_MQTT_USERNAME,
     DEFAULT_SCAN_INTERVAL,
+    DEVICE_TYPES,
     DOMAIN,
+    ISSUE_HUB_VERSION_UNVERIFIED,
+    ISSUE_LEGACY_MQTT_CREDENTIAL,
     MAX_MQTT_HOST_LENGTH,
     MAX_MQTT_HUB_ID_LENGTH,
     MAX_MQTT_USERNAME_LENGTH,
     MQTT_READY_TIMEOUT,
     PLATFORMS,
+    REMOTE_TYPES,
+    VERIFIED_HUB_VERSION_LABEL,
 )
 from .coordinator import GritHubCoordinator
+from .hub import hub_version_is_verified, hub_version_label
 from .mqtt_live import GritLiveMqtt
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +60,20 @@ _MQTT_CONFIG_ERROR = (
     "MQTT configuration is invalid; reconfigure this GRIT Hub entry"
 )
 _MQTT_NOT_READY_ERROR = "MQTT connection is not ready"
+
+# Pre-0.2.0 installs could omit MQTT credentials and silently used this
+# fleet-wide vendor pair. Kept only for runtime compatibility of those entries;
+# never used by discovery or new config-flow probes.
+_LEGACY_MQTT_USERNAME = "grit-readonly"
+_LEGACY_MQTT_PASSWORD = "grit-readonly"
+
+# Removed in v0.2.0 (F11): Hub requireHumanAdmin routes always 403 for API tokens.
+_REMOVED_BUTTON_UNIQUE_IDS = frozenset(
+    {
+        "grit_hub_restart_service",
+        "grit_hub_reboot",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +88,7 @@ class _MqttSettings:
     use_tls: bool
     verify_tls: bool
     keepalive: int
+    uses_legacy_credential: bool = False
 
 
 @dataclass(slots=True)
@@ -175,9 +198,18 @@ def _validate_mqtt_settings(
         password = password_value if password_value.strip() else None
     if password is not None and username is None:
         raise _invalid_mqtt_config()
+
+    uses_legacy_credential = False
     if username is None and password is None:
-        username = DEFAULT_MQTT_USERNAME
-        password = DEFAULT_MQTT_PASSWORD
+        # Pre-0.2.0 entries stored blank credentials and used the vendor pair.
+        username = _LEGACY_MQTT_USERNAME
+        password = _LEGACY_MQTT_PASSWORD
+        uses_legacy_credential = True
+    elif (
+        username == _LEGACY_MQTT_USERNAME
+        and password == _LEGACY_MQTT_PASSWORD
+    ):
+        uses_legacy_credential = True
 
     return _MqttSettings(
         host=host,
@@ -188,7 +220,72 @@ def _validate_mqtt_settings(
         use_tls=use_tls,
         verify_tls=verify_tls,
         keepalive=keepalive,
+        uses_legacy_credential=uses_legacy_credential,
     )
+
+
+def _async_clear_repair_issues(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Remove all repair issues owned by this config entry."""
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+    )
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+    )
+
+
+def _async_update_repair_issues(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    uses_legacy_credential: bool,
+    hub_data: dict[str, Any] | None,
+) -> None:
+    """Create or clear non-fatal repair issues for this config entry."""
+    if uses_legacy_credential:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_LEGACY_MQTT_CREDENTIAL,
+            data={"entry_id": entry.entry_id},
+        )
+    else:
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_LEGACY_MQTT_CREDENTIAL}_{entry.entry_id}",
+        )
+
+    if hub_version_is_verified(hub_data):
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+        )
+    else:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"{ISSUE_HUB_VERSION_UNVERIFIED}_{entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_HUB_VERSION_UNVERIFIED,
+            translation_placeholders={
+                "hub_version": hub_version_label(hub_data) or "unknown",
+                "verified_version": VERIFIED_HUB_VERSION_LABEL,
+            },
+            data={"entry_id": entry.entry_id},
+        )
 
 
 def _apply_mqtt_message(
@@ -228,6 +325,17 @@ def _apply_mqtt_connection_state(
     ready_future = runtime.ready_future
     if ready_future is not None and not ready_future.done():
         ready_future.set_result(connected)
+
+
+def _remove_retired_button_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Remove Restart/Reboot button registry entries left from older versions."""
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.unique_id in _REMOVED_BUTTON_UNIQUE_IDS:
+            registry.async_remove(entity.entity_id)
 
 
 def _remove_compatibility_storage(
@@ -380,6 +488,7 @@ async def async_setup_entry(
         use_tls=settings.use_tls,
         verify_tls=settings.verify_tls,
         connection_state_callback=mqtt_connection_state_callback,
+        expected_hub_id=settings.hub_id,
     )
     runtime = GritHubRuntimeData(
         api=api,
@@ -428,6 +537,13 @@ async def async_setup_entry(
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
             "coordinator": coordinator
         }
+        _remove_retired_button_entities(hass, entry)
+        _async_update_repair_issues(
+            hass,
+            entry,
+            uses_legacy_credential=settings.uses_legacy_credential,
+            hub_data=coordinator.hub_data,
+        )
         forwarding_started = True
         await hass.config_entries.async_forward_entry_setups(
             entry,
@@ -486,6 +602,47 @@ async def async_unload_entry(
         entries = hass.data.get(DOMAIN)
         if isinstance(entries, dict):
             entries.pop(entry.entry_id, None)
+    _async_clear_repair_issues(hass, entry)
+    return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow manual removal of devices absent from the last complete inventory.
+
+    Automatic pruning is not implemented. Returns False while a device is still
+    present in the last successful complete Hub inventory, or when inventory
+    completeness is unknown.
+    """
+    grit_identifiers: set[tuple[str, str]] = set()
+    for identifier in device_entry.identifiers:
+        if not isinstance(identifier, tuple) or not identifier:
+            continue
+        if identifier[0] != DOMAIN:
+            continue
+        if len(identifier) == 2 and identifier[1] == "hub":
+            return False
+        if len(identifier) == 3:
+            device_type, device_id = identifier[1], identifier[2]
+            if isinstance(device_type, str) and isinstance(device_id, str):
+                grit_identifiers.add((device_type, device_id))
+    if not grit_identifiers:
+        return False
+
+    runtime = getattr(config_entry, "runtime_data", None)
+    coordinator = getattr(runtime, "coordinator", None)
+    if coordinator is None:
+        stored = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+        if isinstance(stored, dict):
+            coordinator = stored.get("coordinator")
+    inventory = getattr(coordinator, "last_complete_inventory", None)
+    if inventory is None:
+        return False
+    if any(ident in inventory for ident in grit_identifiers):
+        return False
     return True
 
 
@@ -515,6 +672,8 @@ def _register_services(hass: HomeAssistant) -> None:
                 call.data.get("remote_type", "api"),
             )
             await _first_coordinator(hass).async_request_refresh()
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -523,6 +682,8 @@ def _register_services(hass: HomeAssistant) -> None:
         try:
             await api.refresh_device(call.data["device_type"], call.data["device_id"])
             await _first_coordinator(hass).async_request_refresh()
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -530,6 +691,8 @@ def _register_services(hass: HomeAssistant) -> None:
         api = _first_api(hass)
         try:
             await api.locate_device(call.data["device_type"], call.data["device_id"])
+        except GritHubValidationError as err:
+            raise ServiceValidationError(str(err)) from err
         except GritHubApiError as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -538,22 +701,28 @@ def _register_services(hass: HomeAssistant) -> None:
         SERVICE_DEVICE_COMMAND,
         device_command,
         schema=vol.Schema({
-            vol.Required("device_type"): str,
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
             vol.Required("device_id"): vol.Any(str, int),
             vol.Required("command_name"): str,
             vol.Required("action"): str,
-            vol.Optional("remote_type", default="api"): str,
+            vol.Optional("remote_type", default="api"): vol.In(sorted(REMOTE_TYPES)),
         }),
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_REFRESH_DEVICE,
         refresh_device,
-        schema=vol.Schema({vol.Required("device_type"): str, vol.Required("device_id"): vol.Any(str, int)}),
+        schema=vol.Schema({
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
+            vol.Required("device_id"): vol.Any(str, int),
+        }),
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_LOCATE_DEVICE,
         locate_device,
-        schema=vol.Schema({vol.Required("device_type"): str, vol.Required("device_id"): vol.Any(str, int)}),
+        schema=vol.Schema({
+            vol.Required("device_type"): vol.In(list(DEVICE_TYPES)),
+            vol.Required("device_id"): vol.Any(str, int),
+        }),
     )

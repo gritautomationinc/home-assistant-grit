@@ -347,7 +347,7 @@ class ApiHubTests(unittest.TestCase):
                 self.assertNotIn("state", rfid)
                 self.assertNotIn("lockout", rfid)
 
-    def test_individual_rfid_get_is_bounded_encoded_and_sanitized(self):
+    def test_individual_rfid_get_is_bounded_and_sanitized(self):
         client = self.client()
         calls = []
         private_value = "fabricated-private-reader-data"
@@ -355,7 +355,7 @@ class ApiHubTests(unittest.TestCase):
         async def request(method, path, **kwargs):
             calls.append((method, path, kwargs))
             return {
-                "id": "reader/id",
+                "id": "reader-id",
                 "state": False,
                 "lockout": False,
                 "onlineStatus": True,
@@ -365,12 +365,12 @@ class ApiHubTests(unittest.TestCase):
             }
 
         client.request = request
-        result = asyncio.run(client.get_rfid_device("reader/id"))
+        result = asyncio.run(client.get_rfid_device("reader-id"))
 
         self.assertEqual(
             result,
             {
-                "id": "reader/id",
+                "id": "reader-id",
                 "state": False,
                 "onlineStatus": True,
                 "displayName": "Fabricated Reader",
@@ -382,7 +382,7 @@ class ApiHubTests(unittest.TestCase):
             [
                 (
                     "GET",
-                    "/api/rfid/reader%2Fid",
+                    "/api/rfid/reader-id",
                     {"timeout": API.REST_DISCOVERY_TIMEOUT},
                 )
             ],
@@ -405,7 +405,20 @@ class ApiHubTests(unittest.TestCase):
     def test_individual_rfid_identifier_validation_fails_closed(self):
         client = self.client()
         client.request = mock.AsyncMock()
-        for value in (None, True, 42, "", " ", ".", "..", "line\nbreak", "x" * 129):
+        for value in (
+            None,
+            True,
+            42,
+            "",
+            " ",
+            ".",
+            "..",
+            "line\nbreak",
+            "x" * 129,
+            "reader/id",
+            "a%2fb",
+            "foo\\bar",
+        ):
             with self.subTest(value=value):
                 with self.assertRaises(API.GritHubApiError):
                     asyncio.run(client.get_rfid_device(value))
@@ -420,7 +433,7 @@ class ApiHubTests(unittest.TestCase):
                 )
                 self.assertNotIn("state", collector)
 
-    def test_individual_collector_get_is_encoded_bounded_and_sanitized(self):
+    def test_individual_collector_get_is_bounded_and_sanitized(self):
         client = self.client()
         calls = []
         private_value = "fabricated-private-collector-data"
@@ -428,7 +441,7 @@ class ApiHubTests(unittest.TestCase):
         async def request(method, path, **kwargs):
             calls.append((method, path, kwargs))
             return {
-                "id": "collector/id",
+                "id": "collector-id",
                 "state": True,
                 "stateChanging": False,
                 "stateChangingTo": True,
@@ -440,12 +453,12 @@ class ApiHubTests(unittest.TestCase):
             }
 
         client.request = request
-        result = asyncio.run(client.get_collector_device("collector/id"))
+        result = asyncio.run(client.get_collector_device("collector-id"))
 
         self.assertEqual(
             result,
             {
-                "id": "collector/id",
+                "id": "collector-id",
                 "state": True,
                 "stateChanging": False,
                 "stateChangingTo": True,
@@ -460,7 +473,7 @@ class ApiHubTests(unittest.TestCase):
             [
                 (
                     "GET",
-                    "/api/collector/collector%2Fid",
+                    "/api/collector/collector-id",
                     {"timeout": API.REST_DISCOVERY_TIMEOUT},
                 )
             ],
@@ -494,11 +507,14 @@ class ApiHubTests(unittest.TestCase):
             "..",
             "line\nbreak",
             "x" * 129,
+            "collector/id",
+            "a%2fb",
         ):
             with self.subTest(identifier=value):
                 with self.assertRaises(API.GritHubApiError):
                     asyncio.run(client.get_collector_device(value))
         client.request.assert_not_awaited()
+
     def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
         client = self.client()
         calls = []
@@ -508,7 +524,7 @@ class ApiHubTests(unittest.TestCase):
             return {"success": True, "message": "fabricated success"}
 
         client.request = request
-        asyncio.run(client.request_device_telemetry("gate", "gate/id"))
+        asyncio.run(client.request_device_telemetry("gate", "gate-id"))
         asyncio.run(client.request_device_telemetry("rfid", "42"))
         asyncio.run(client.request_device_telemetry("trigger", "trigger-1"))
 
@@ -518,7 +534,7 @@ class ApiHubTests(unittest.TestCase):
             [
                 (
                     "POST",
-                    "/api/device/mesh-telemetry/refresh/gate/gate%2Fid",
+                    "/api/device/mesh-telemetry/refresh/gate/gate-id",
                     {"timeout": timeout},
                 ),
                 (
@@ -553,6 +569,7 @@ class ApiHubTests(unittest.TestCase):
             ("gate", ""),
             ("gate", "."),
             ("gate", ".."),
+            ("gate", "gate/id"),
             ("rfid", True),
             ("rfid", 42),
             ("rfid", "line\nbreak"),
@@ -578,8 +595,6 @@ class ApiHubTests(unittest.TestCase):
         asyncio.run(client.set_gritlock(True))
         asyncio.run(client.set_gritlock(False))
         asyncio.run(client.set_system_led_brightness(HUB_ID, 60))
-        asyncio.run(client.restart_service())
-        asyncio.run(client.reboot_hub())
 
         timeout = API.REST_DISCOVERY_TIMEOUT
         self.assertEqual(
@@ -603,10 +618,10 @@ class ApiHubTests(unittest.TestCase):
                         "timeout": timeout,
                     },
                 ),
-                ("PUT", "/api/hub/restart", {"timeout": timeout}),
-                ("PUT", "/api/hub/reboot", {"timeout": timeout}),
             ],
         )
+        self.assertFalse(hasattr(client, "restart_service"))
+        self.assertFalse(hasattr(client, "reboot_hub"))
 
     def test_invalid_command_inputs_fail_before_request(self):
         client = self.client()
@@ -629,6 +644,162 @@ class ApiHubTests(unittest.TestCase):
                         )
                     )
         client.request.assert_not_awaited()
+
+    def test_call_command_rejects_traversal_segments_before_http(self):
+        client = self.client()
+        client.request = mock.AsyncMock()
+        for device_id, command, action, remote in (
+            ("device/with/slash", "cmd", "press", "api"),
+            ("device", "cmd/with/slash", "press", "api"),
+            ("device", "cmd", "press/now", "api"),
+            ("a%2fb", "cmd", "press", "api"),
+            ("%2e%2e", "cmd", "press", "api"),
+            ("foo\\bar", "cmd", "press", "api"),
+            (".", "cmd", "press", "api"),
+            ("..", "cmd", "press", "api"),
+        ):
+            with self.subTest(
+                device_id=device_id,
+                command=command,
+                action=action,
+                remote=remote,
+            ):
+                client.request.reset_mock()
+                with self.assertRaises(API.GritHubValidationError):
+                    asyncio.run(
+                        client.call_command(
+                            "gate",
+                            device_id,
+                            command,
+                            action,
+                            remote,
+                        )
+                    )
+                client.request.assert_not_awaited()
+
+    def test_call_command_rejects_unknown_device_type(self):
+        client = self.client()
+        client.request = mock.AsyncMock()
+        with self.assertRaises(API.GritHubValidationError):
+            asyncio.run(
+                client.call_command(
+                    "not-a-device-type",
+                    "device-one",
+                    "cmd",
+                    "press",
+                    "api",
+                )
+            )
+        client.request.assert_not_awaited()
+
+    def test_call_command_rejects_unknown_remote_type(self):
+        client = self.client()
+        client.request = mock.AsyncMock()
+        with self.assertRaises(API.GritHubValidationError):
+            asyncio.run(
+                client.call_command(
+                    "gate",
+                    "device-one",
+                    "cmd",
+                    "press",
+                    "not-a-remote-type",
+                )
+            )
+        client.request.assert_not_awaited()
+
+    def test_call_command_posts_safe_segments(self):
+        captured: dict[str, str] = {}
+
+        async def request(method, path, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            return {}
+
+        client = self.client()
+        client.request = request
+        asyncio.run(
+            client.call_command(
+                "gate",
+                "device-one",
+                "cmd",
+                "press",
+                "api",
+            )
+        )
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(
+            captured["path"],
+            "/api/command/gate/device-one/cmd/press/api",
+        )
+
+    def test_lockout_502_reports_partial_apply(self):
+        client = self.client()
+
+        async def request(method, path, **kwargs):
+            raise API.GritHubApiError(
+                "PUT /api/hub/lockout failed: HTTP 502",
+                http_status=502,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.set_gritlock(True))
+        self.assertEqual(raised.exception.http_status, 502)
+        self.assertIn("partially applied", str(raised.exception))
+
+    def test_lockout_409_reports_superseded(self):
+        client = self.client()
+
+        async def request(method, path, **kwargs):
+            raise API.GritHubApiError(
+                "PUT /api/hub/lockout failed: HTTP 409",
+                http_status=409,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.set_gritlock(False))
+        self.assertEqual(raised.exception.http_status, 409)
+        self.assertIn("superseded by a newer request", str(raised.exception))
+
+    def test_health_check_falls_back_only_on_404(self):
+        client = self.client()
+        calls: list[str] = []
+
+        async def request(method, path, **kwargs):
+            calls.append(path)
+            if path == "/health-check":
+                raise API.GritHubApiError(
+                    "GET /health-check failed: HTTP 404",
+                    http_status=404,
+                )
+            return {"ok": True}
+
+        client.request = request
+        result = asyncio.run(client.health_check())
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["/health-check", "/"])
+
+    def test_health_check_503_does_not_fall_back_to_root(self):
+        client = self.client()
+        calls: list[str] = []
+
+        async def request(method, path, **kwargs):
+            calls.append(path)
+            raise API.GritHubApiError(
+                "GET /health-check failed: HTTP 503",
+                http_status=503,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.health_check())
+        self.assertEqual(calls, ["/health-check"])
+        self.assertEqual(raised.exception.http_status, 503)
+        self.assertEqual(
+            str(raised.exception),
+            "Hub health check: identity unavailable (503)",
+        )
 
 
 if __name__ == "__main__":

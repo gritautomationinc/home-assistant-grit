@@ -125,7 +125,7 @@ supported Home Assistant APIs, and reloads once.
 | State | Authoritative evidence |
 | --- | --- |
 | Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
-| RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
+| RFID | Strict individual `GET /api/rfid/{id}` boolean `state` (Hub in-memory observation); exact MQTT `s`/`st`/`sts` invalidate and request a coalesced refresh |
 | GRITLock | One latest immutable observation published by current-connection startup `/sts` or `/tel` `gls`, a naturally settled live `/gl-d` burst, or explicit disagreement |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
@@ -140,9 +140,12 @@ refresh. No current displayed value or HTTP success alone confirms a command.
 
 For gates, compact MQTT field `p` is a bounded 0--100 position. Firmware may
 encode it as a number or bounded numeric text. Startup `/sts` or `/tel`, plus
-live `/mv`, `/mv-d`, `/p`, `/s`, and `/st` observations, enter the same
-sanitized per-device state path. `/req-tel` cannot hydrate or alter a gate. Gate
-startup state is never taken from REST.
+live `/mv-d`, `/p`, and `/st` observations, enter the same sanitized per-device
+state path. Hub command `/mv` is ignored as state. Gate `/s` currently still
+updates open state through that path when it carries a valid open, state, or
+`s` field or a usable position; that behaviour is unchanged here pending an
+owner decision relative to ADR 0001. `/req-tel` cannot hydrate or alter a gate.
+Gate startup state is never taken from REST.
 
 ### Continuous GRITLock observed state
 
@@ -170,7 +173,14 @@ All selected participants must agree on `gls`. Unanimous one publishes Locked,
 unanimous zero publishes Unlocked, and complete selected-participant
 disagreement publishes Unknown. Malformed, incomplete, overflowing, timed-out,
 or unsettled evidence publishes no new authority and preserves the last valid
-state. REST `gritLockState` is never displayed.
+state. Participation for a settling burst is evaluated against the latest
+usable REST inventory at settle time (latest inventory wins).
+
+When displayed state is still unknown, a successful REST trigger inventory that
+carries agreeing boolean `gritLockState` for every `gritLockEnabled=true`
+participant may publish a labelled `rest_seed` observation. That seed is
+Hub-rest-derived display state only and cannot confirm a lock or unlock
+command. Device `/gl-d` and later device `/sts` evidence replace it.
 
 At startup or reconnect, the exact matching SUBACK opens one bounded
 connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
@@ -186,7 +196,11 @@ enter or delay the snapshot. Every valid observation restarts one 250 ms quiet
 boundary; unanimous or disagreeing evidence then publishes before the five-
 second window expires. Startup consensus publishes through the same latest-
 observation field as live `/gl-d`, but its
-`startup_status` source cannot confirm a command.
+`startup_status` source cannot confirm a command. After that window expires,
+later trigger `/sts` frames with strict `gls` may still publish
+`device_status` display state when live `/gl-d` authority is absent. The
+GRITLock entity stays available whenever Hub REST polling is succeeding, even
+while state is unknown.
 
 ### GRITLock commands and freshness
 
@@ -213,13 +227,15 @@ the latest observation, wakes waiters to fail, and cancels the bounded burst
 task; reconnect increments the connection
 generation and begins new startup hydration.
 
-RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
-most one active task and one trailing request per reader, tracks at most 64
-readers, and shares a four-request concurrency limit. Gate/RFID reconnect
-telemetry requests and best-effort trigger startup requests are similarly
-bounded and coalesced. RFID continues to hydrate from its strict individual REST
-detail; MQTT payload values do not replace that authority. Cancellation
-propagates; no detached work should continue after unload.
+RFID MQTT event refresh (exact `s`, `st`, and registration `sts`) is debounced
+at approximately 250 milliseconds, has at most one active task and one trailing
+request per reader, tracks at most 64 readers, and shares a four-request
+concurrency limit. Gate/RFID reconnect telemetry requests and best-effort
+trigger startup requests are similarly bounded and coalesced. RFID continues to
+hydrate from its strict individual REST detail; MQTT payload values do not
+replace that authority. Unknown lock state means the Hub has not observed that
+reader since the Hub process started. Cancellation propagates; no detached work
+should continue after unload.
 
 ## Privacy boundary
 

@@ -85,11 +85,17 @@ a separate safety concern.
 
 ## RFID state is stale, Unknown, or unavailable
 
-RFID state comes only from strict individual `GET /api/rfid/{id}` detail.
-Collection `lockout`, MQTT `sts.s`, and MQTT `s`/`st` payload values are not lock
-state. Exact `s` and `st` messages only trigger a bounded individual refresh.
-An offline reader is unavailable; temporary read failures retain the last valid
-state rather than inventing one. The default poll is a 30-second fallback.
+RFID lock state is the Hub's in-memory observation, read only from strict
+individual `GET /api/rfid/{id}` detail. Unknown means the Hub has not seen that
+reader's state since the Hub process started. Collection `lockout` and MQTT
+payload values are not lock state. Exact MQTT `s`, `st`, and `sts` only trigger
+a bounded, coalesced individual REST refresh. An offline reader is unavailable;
+temporary read failures retain the last valid state rather than inventing one.
+The default poll is a 30-second fallback.
+
+MQTT Last Received stays available while the broker connection is up. A missing
+timestamp means never seen this session (unknown), not that the sensor itself is
+unavailable.
 
 ## GRITLock is Unknown or does not confirm
 

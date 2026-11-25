@@ -384,6 +384,21 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertFalse(self.send(instance, hub_id="other-hub"))
         self.assertEqual(instance.updated_data, [])
 
+    def test_unknown_device_type_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, device_type="unknown-type"))
+        self.assertEqual(instance.updated_data, [])
+
+    def test_invalid_mqtt_message_type_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, message_type="x" * 200))
+        self.assertEqual(instance.updated_data, [])
+
+    def test_invalid_mqtt_device_identifier_is_rejected(self):
+        instance = self.coordinator()
+        self.assertFalse(self.send(instance, device_id="x" * 200))
+        self.assertEqual(instance.updated_data, [])
+
     def test_unknown_and_ambiguous_devices_are_rejected(self):
         instance = self.coordinator()
         self.assertFalse(self.send(instance, device_id="missing-device"))
@@ -476,13 +491,78 @@ class CoordinatorMqttTests(unittest.TestCase):
                         instance,
                         device_type="solenoid",
                         device_id="device-switch",
-                        message_type="s",
+                        message_type="st",
                         payload={"state": raw},
                     )
                 )
                 self.assertIs(
                     self.mqtt_state(instance, "solenoid")["state"], expected
                 )
+
+    def test_gate_mv_command_echo_is_ignored(self):
+        instance = self.coordinator()
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="gate",
+                device_id="device-gate",
+                message_type="mv",
+                payload={"p": 65, "o": 1},
+            )
+        )
+        state = self.mqtt_state(instance, "gate")
+        self.assertNotIn("position", state)
+        self.assertNotIn("open", state)
+
+    def test_switch_s_command_echo_is_ignored_for_all_switch_types(self):
+        devices = _device_map()
+        devices["powerbank"] = [{"id": "device-powerbank"}]
+        devices["latch"] = [{"id": "device-latch"}]
+        devices["collector"] = [{"id": "device-collector"}]
+        instance = self.coordinator(devices=devices)
+
+        for device_type, device_id in (
+            ("solenoid", "device-switch"),
+            ("powerbank", "device-powerbank"),
+            ("latch", "device-latch"),
+            ("collector", "device-collector"),
+        ):
+            with self.subTest(device_type=device_type):
+                self.assertTrue(
+                    self.send(
+                        instance,
+                        device_type=device_type,
+                        device_id=device_id,
+                        message_type="s",
+                        payload={"state": 1},
+                    )
+                )
+                state = self.mqtt_state(instance, device_type)
+                self.assertNotIn("state", state)
+
+    def test_switch_sts_updates_state_and_gl_does_not(self):
+        instance = self.coordinator()
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="solenoid",
+                device_id="device-switch",
+                message_type="sts",
+                payload={"state": 1},
+            )
+        )
+        self.assertTrue(self.mqtt_state(instance, "solenoid")["state"])
+
+        self.assertFalse(
+            self.send(
+                instance,
+                device_type="solenoid",
+                device_id="device-switch",
+                message_type="gl",
+                payload={"state": 0},
+            )
+        )
+        self.assertTrue(self.mqtt_state(instance, "solenoid")["state"])
 
     def test_ambiguous_boolean_values_are_rejected(self):
         for raw in ("yes", "enabled", 2, -1, 0.0, None, [], {}):
@@ -493,7 +573,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                         instance,
                         device_type="solenoid",
                         device_id="device-switch",
-                        message_type="s",
+                        message_type="st",
                         payload={"s": raw},
                     )
                 )
@@ -528,7 +608,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance,
                 device_type="solenoid",
                 device_id="device-switch",
-                message_type="gls/detail",
+                message_type="st/detail",
                 payload={"state": "closed"},
             )
         )
@@ -821,7 +901,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance,
                 device_type="solenoid",
                 device_id="device-switch",
-                message_type="s",
+                message_type="st",
                 payload={"state": True},
             )
         )
@@ -900,6 +980,11 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertEqual(second["hub"], first["hub"])
         self.assertIn("hub", second["errors"])
         self.assertIn("trigger", second["errors"])
+        # Failed trigger poll must preserve prior inventory for participation.
+        self.assertEqual(
+            second["devices"]["trigger"],
+            first["devices"]["trigger"],
+        )
 
     def gritlock_coordinator(self, count=2):
         devices = _device_map()
@@ -1072,6 +1157,107 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertEqual(
             instance.gritlock_participating_trigger_ids,
             frozenset({"trigger-1"}),
+        )
+
+    def test_settle_uses_latest_rest_inventory_for_participation(self):
+        """ADR 0001: participation is evaluated at settle time; latest wins."""
+        instance = self.gritlock_coordinator(3)
+        self.send_gritlock(instance, "trigger-0", 0, 1)
+        self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertEqual(set(burst.observations), {"trigger-0", "trigger-1"})
+
+        instance.data["devices"]["trigger"][0]["gritLockEnabled"] = False
+        instance.data["devices"]["trigger"][2]["gritLockEnabled"] = False
+        self.assertEqual(set(burst.observations), {"trigger-0", "trigger-1"})
+        self.assertTrue(self.settle_gritlock(instance))
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-1"}),
+        )
+
+    def test_incomplete_quiet_settle_keeps_burst_for_later_gl_d(self):
+        """Missing REST participants must not discard in-flight gl-d evidence."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=10.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertIsNotNone(burst)
+        # Natural settle (force=False) must keep the burst open.
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=False, now=10.5)
+        )
+        self.assertIs(instance._gritlock_live_burst, burst)
+        self.assertEqual(
+            set(burst.observations),
+            {"trigger-0", "trigger-1"},
+        )
+
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=11.0,
+        ):
+            self.send_gritlock(instance, "trigger-2", 0, 1)
+        self.assertTrue(self.settle_gritlock(instance, now=11.5))
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-0", "trigger-1", "trigger-2"}),
+        )
+
+    def test_empty_trigger_inventory_does_not_confirm_subset(self):
+        """Empty trigger list (failed poll) must not confirm from a gl-d subset."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=20.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        # Failed trigger poll previously replaced inventory with [].
+        instance.data["devices"]["trigger"] = []
+        # Without usable REST participants, live settle must not confirm
+        # from the partial observation set alone.
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=True, now=20.5)
+        )
+        self.assertIsNone(instance.gritlock_state)
+
+    def test_rest_inventory_shrink_resettles_open_burst_without_new_mqtt(self):
+        """Latest REST inventory can complete an open burst after quiet exit."""
+        instance = self.gritlock_coordinator(3)
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=30.0,
+        ):
+            self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+        burst = instance._gritlock_live_burst
+        self.assertFalse(
+            instance._settle_gritlock_burst(burst, force=False, now=30.5)
+        )
+        self.assertIs(instance._gritlock_live_burst, burst)
+
+        # Simulate a successful trigger poll that shrinks participants to the
+        # already-observed set, then re-kicks settle (as _async_update_data does).
+        instance.data["devices"]["trigger"][2]["gritLockEnabled"] = False
+        self.assertTrue(
+            instance._settle_gritlock_burst(burst, force=False, now=31.0)
+        )
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-0", "trigger-1"}),
         )
 
     def test_later_unrelated_status_does_not_overwrite_live_state(self):
@@ -1548,7 +1734,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             first_generation,
         )
         self.assertIn("rfid_state", failed_refresh["errors"])
-    async def test_successful_rest_omission_preserves_only_mqtt_gate_device(self):
+    async def test_successful_rest_omission_does_not_reappend_mqtt_gate(self):
         api = FakeApi({"gate": [], "rfid": []})
         instance = self.coordinator(api)
         self.assertTrue(
@@ -1572,17 +1758,12 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
         refreshed = await instance._async_update_data()
 
-        self.assertEqual(len(refreshed["devices"]["gate"]), 1)
+        self.assertEqual(refreshed["devices"]["gate"], [])
         self.assertEqual(refreshed["devices"]["rfid"], [])
-        gate = refreshed["devices"]["gate"][0]
-        self.assertEqual(
-            set(gate),
-            {"id", coordinator_module.MQTT_STATE_KEY},
-        )
-        self.assertTrue(gate[coordinator_module.MQTT_STATE_KEY]["open"])
-        self.assertEqual(
-            gate[coordinator_module.MQTT_STATE_KEY]["position"],
-            90,
+        self.assertIsNotNone(instance.last_complete_inventory)
+        self.assertNotIn(
+            ("gate", "device-gate"),
+            instance.last_complete_inventory,
         )
     async def test_targeted_reconciliation_preserves_gate_mqtt_state(self):
         api = FakeApi()
@@ -2273,6 +2454,26 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(task)
             await asyncio.wait_for(task, timeout=1)
 
+    async def test_gritlock_evidence_source_and_live_unconfirmed_count(self):
+        instance = self.gritlock_instance(2)
+        self.assertIsNone(instance.gritlock_evidence_source)
+        self.assertIsNone(instance.gritlock_live_unconfirmed_trigger_count())
+
+        self.emit_gritlock(instance, (("trigger-0", 1, 1),))
+        self.assertEqual(instance.gritlock_live_unconfirmed_trigger_count(), 1)
+        self.assertIsNone(instance.gritlock_evidence_source)
+
+        await self.settle_gritlock(
+            instance,
+            (("trigger-1", 1, 1),),
+        )
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance.gritlock_evidence_source,
+            coordinator_module._GRITLOCK_SOURCE_LIVE,
+        )
+        self.assertIsNone(instance.gritlock_live_unconfirmed_trigger_count())
+
     async def test_dion_sparse_unlock_confirms_on_continuous_channel(self):
         instance = self.gritlock_instance(9, enabled_trigger_ids={"trigger-8"})
         boundary_connection = instance.mqtt_connection_generation
@@ -2631,8 +2832,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(api.telemetry_calls, [])
-    async def test_exact_rfid_s_and_st_schedule_authoritative_refresh(self):
-        for message_type in ("s", "st"):
+    async def test_exact_rfid_s_st_and_sts_schedule_authoritative_refresh(self):
+        for message_type in ("s", "st", "sts"):
             with self.subTest(message_type=message_type):
                 api = FakeApi()
                 api.rfid_details["device-rfid"] = {
@@ -2652,6 +2853,9 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 }
                 if message_type == "st":
                     payload["rssi"] = -57
+                if message_type == "sts":
+                    payload["sts"] = 1
+                    payload["rssi"] = -60
 
                 with mock.patch.object(
                     coordinator_module,
@@ -2674,11 +2878,15 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                         7,
                     )
                     self.assertNotIn("FABRICATED_ACTIVITY", repr(instance.data))
+                    state = instance.data["devices"]["rfid"][0][
+                        coordinator_module.MQTT_STATE_KEY
+                    ]
+                    self.assertIn("last_received_at", state)
                     if message_type == "st":
-                        state = instance.data["devices"]["rfid"][0][
-                            coordinator_module.MQTT_STATE_KEY
-                        ]
                         self.assertEqual(state["rssi"], -57)
+                    if message_type == "sts":
+                        self.assertEqual(state["rssi"], -60)
+                        self.assertTrue(state["online"])
                     await self.wait_for_rfid_event_idle(instance)
 
                 self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
@@ -2717,19 +2925,10 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
         self.assertFalse(instance.rfid_enabled("device-rfid"))
 
-    async def test_rfid_sts_and_nonexact_types_do_not_schedule_event_refresh(self):
+    async def test_rfid_compound_types_do_not_schedule_event_refresh(self):
         instance = self.coordinator(FakeApi())
         instance.set_mqtt_connected(True)
 
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "sts",
-                {"s": 0, "sts": 1, "rssi": -60},
-            )
-        )
         self.assertTrue(
             instance.handle_mqtt_message(
                 "hub-expected",
@@ -2741,6 +2940,47 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(instance._rfid_event_tasks, {})
         self.assertEqual(instance.api.rfid_detail_calls, [])
+        state = instance.data["devices"]["rfid"][0][
+            coordinator_module.MQTT_STATE_KEY
+        ]
+        self.assertIn("last_received_at", state)
+
+    async def test_rfid_s_without_state_fields_updates_last_received(self):
+        api = FakeApi()
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": False,
+        }
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            before = datetime.now(timezone.utc)
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0, "scr": "FABRICATED_ACTIVITY"},
+                )
+            )
+            state = instance.data["devices"]["rfid"][0][
+                coordinator_module.MQTT_STATE_KEY
+            ]
+            received = state["last_received_at"]
+            after = datetime.now(timezone.utc)
+            self.assertEqual(received.tzinfo, timezone.utc)
+            self.assertLessEqual(before, received)
+            self.assertLessEqual(received, after)
+            self.assertNotIn("state", state)
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
 
     async def test_rfid_s_and_st_within_debounce_are_coalesced(self):
         api = FakeApi()
@@ -3562,7 +3802,7 @@ class CollectorStateReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "collector",
                 "collector-fabricated",
-                "s",
+                "st",
                 {"s": False},
             )
         )

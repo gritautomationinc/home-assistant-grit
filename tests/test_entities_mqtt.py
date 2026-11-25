@@ -7,6 +7,7 @@ from enum import IntFlag
 import importlib.util
 import logging
 from pathlib import Path
+import re
 import socket
 import sys
 import types
@@ -321,12 +322,6 @@ class FakeApi:
     ) -> None:
         self.hub_calls.append(("set_led", hub_id, brightness))
 
-    async def restart_service(self) -> None:
-        self.hub_calls.append(("restart_service",))
-
-    async def reboot_hub(self) -> None:
-        self.hub_calls.append(("reboot_hub",))
-
 
 class FakeCoordinator:
     def __init__(self, devices: dict[str, list[dict[str, Any]]]) -> None:
@@ -348,6 +343,8 @@ class FakeCoordinator:
         self.api = FakeApi()
         self.listener_updates = 0
         self.gritlock_state_value: bool | None = None
+        self.gritlock_evidence_source_value: str | None = None
+        self.gritlock_live_unconfirmed_value: int | None = None
         self.gritlock_participating_trigger_ids = frozenset({"trigger-test"})
         self.refresh_hook: Callable[[], None] | None = None
         self.refresh_block: asyncio.Event | None = None
@@ -390,6 +387,13 @@ class FakeCoordinator:
     @property
     def gritlock_state(self) -> bool | None:
         return self.gritlock_state_value
+
+    @property
+    def gritlock_evidence_source(self) -> str | None:
+        return self.gritlock_evidence_source_value
+
+    def gritlock_live_unconfirmed_trigger_count(self) -> int | None:
+        return self.gritlock_live_unconfirmed_value
 
     async def async_request_refresh(self) -> None:
         self.refresh_calls += 1
@@ -733,6 +737,24 @@ class EntityMqttTests(unittest.TestCase):
         return SWITCH_MODULE.GritHubDeviceSwitch(
             self.coordinator, "solenoid", self.switch_device
         )
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+        return slug.strip("_")
+
+    def _suggested_entity_id(self, domain: str, entity: Any) -> str:
+        """Approximate HA object_id with has_entity_name=True."""
+        device_name = entity.device_info["name"]
+        entity_name = getattr(entity, "_attr_name", None)
+        if entity_name is None:
+            object_id = self._slugify(device_name)
+        else:
+            object_id = (
+                f"{self._slugify(device_name)}_"
+                f"{self._slugify(str(entity_name))}"
+            )
+        return f"{domain}.{object_id}"
     def collector_switch(self):
         collectors = self.coordinator.data["devices"]["collector"]
         if not collectors:
@@ -1099,6 +1121,80 @@ class EntityMqttTests(unittest.TestCase):
         self.assertIsNone(cover.is_closed)
         self.assertIsNone(rfid_lock.is_locked)
 
+    def test_primary_entities_use_device_name_without_doubling(self):
+        bandsaw = {"id": "bandsaw", "name": "Bandsaw"}
+        self.coordinator.data["devices"]["rfid"] = [bandsaw]
+        self.coordinator.data["devices"]["gate"] = [
+            {"id": "front-gate", "name": "Front Gate"}
+        ]
+        self.coordinator.data["devices"]["solenoid"] = [
+            {"id": "solenoid-1", "name": "Dust Gate"}
+        ]
+
+        rfid_lock = LOCK_MODULE.GritHubRfidLock(
+            self.coordinator, "rfid", bandsaw
+        )
+        cover = COVER_MODULE.GritHubGateCover(
+            self.coordinator,
+            "gate",
+            self.coordinator.data["devices"]["gate"][0],
+        )
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "solenoid",
+            self.coordinator.data["devices"]["solenoid"][0],
+        )
+
+        for entity in (rfid_lock, cover, switch):
+            self.assertTrue(entity._attr_has_entity_name)
+            self.assertIsNone(entity._attr_name)
+
+        self.assertEqual(
+            self._suggested_entity_id("lock", rfid_lock),
+            "lock.bandsaw",
+        )
+        self.assertNotEqual(
+            self._suggested_entity_id("lock", rfid_lock),
+            "lock.bandsaw_bandsaw",
+        )
+        self.assertEqual(
+            self._suggested_entity_id("cover", cover),
+            "cover.front_gate",
+        )
+        self.assertEqual(
+            self._suggested_entity_id("switch", switch),
+            "switch.dust_gate",
+        )
+
+    def test_existing_registry_entity_ids_persist_across_name_change(self):
+        """unique_id is unchanged; a pre-populated registry keeps entity_id."""
+        bandsaw = {"id": "bandsaw", "name": "Bandsaw"}
+        entity = LOCK_MODULE.GritHubRfidLock(
+            self.coordinator, "rfid", bandsaw
+        )
+        unique_id = entity._attr_unique_id
+        self.assertEqual(unique_id, "grit_hub_rfid_bandsaw")
+
+        # Simulate an older install that registered the doubled object_id.
+        registry = {
+            unique_id: {
+                "entity_id": "lock.bandsaw_bandsaw",
+                "unique_id": unique_id,
+                "platform": "grit_hub",
+            }
+        }
+        # Friendly name follows has_entity_name + device name; entity_id stays.
+        self.assertIsNone(entity._attr_name)
+        self.assertEqual(
+            entity.device_info["name"],
+            "Bandsaw",
+        )
+        self.assertEqual(
+            registry[unique_id]["entity_id"],
+            "lock.bandsaw_bandsaw",
+        )
+        self.assertEqual(registry[unique_id]["unique_id"], unique_id)
+
     def test_mocked_gate_and_rfid_commands_require_fresh_confirmed_state(self):
         rfid = {
             "id": "rfid-fabricated",
@@ -1446,16 +1542,16 @@ class EntityMqttTests(unittest.TestCase):
         self.assertEqual(self.coordinator.confirmation_calls, [])
         self.assertIsNone(cover.is_closed)
 
-    def test_refresh_boundaries_are_captured_before_switch_and_led_commands(self):
+    def test_switch_confirms_from_mqtt_not_rest_refresh(self):
         switch = self.device_switch()
         led = NUMBER_MODULE.GritHubSystemLedBrightnessNumber(
             self.coordinator
         )
         request_refresh = mock.AsyncMock()
+        boundary = self.coordinator.mqtt_receive_sequence
 
         async def switch_command(*_args: Any) -> None:
-            self.coordinator.refresh_sequence += 1
-            self.switch_device["state"] = True
+            self.coordinator.observe_device_state("solenoid", SWITCH_ID, True)
 
         with mock.patch.object(
             self.coordinator.api,
@@ -1469,10 +1565,20 @@ class EntityMqttTests(unittest.TestCase):
             self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
-        request_refresh.assert_awaited_once_with()
+        request_refresh.assert_not_awaited()
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [
+                (
+                    "solenoid",
+                    SWITCH_ID,
+                    True,
+                    boundary,
+                    SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+                )
+            ],
+        )
         self.assertTrue(switch.is_on)
-
-        request_refresh.reset_mock()
 
         async def led_command(*_args: Any) -> None:
             self.coordinator.refresh_sequence += 1
@@ -1506,7 +1612,6 @@ class EntityMqttTests(unittest.TestCase):
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_hook = lambda: None
             with self.assertRaisesRegex(
                 HomeAssistantError,
                 "Device state could not be confirmed",
@@ -1514,6 +1619,7 @@ class EntityMqttTests(unittest.TestCase):
                 self.loop.run_until_complete(switch.async_turn_on())
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 1)
 
     def test_matching_stale_state_cannot_confirm_command(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
@@ -1536,9 +1642,10 @@ class EntityMqttTests(unittest.TestCase):
             with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
                 self.loop.run_until_complete(switch.async_turn_off())
 
-        no_refresh.assert_awaited_once_with()
+        no_refresh.assert_not_awaited()
         self.assertTrue(cover.is_closed)
         self.assertEqual(cover.current_cover_position, 20)
+        self.assertEqual(len(self.coordinator.confirmation_calls), 2)
 
     def test_gate_command_is_not_optimistic_while_confirmation_is_pending(self):
         self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
@@ -1682,18 +1789,27 @@ class EntityMqttTests(unittest.TestCase):
         last_received = SENSOR_MODULE.GritHubMqttLastReceivedSensor(
             self.coordinator, ENTRY_ID, "gate", self.gate
         )
-        for entity in (rssi, firmware, last_received):
+        # RSSI/firmware stay unavailable until a supported value exists.
+        for entity in (rssi, firmware):
             self.assertFalse(entity.available)
             self.assertIsNone(entity.native_value)
+        # Last-received stays available while MQTT is up; None means never seen.
+        self.assertTrue(last_received.available)
+        self.assertIsNone(last_received.native_value)
 
         self.gate[MQTT_STATE_KEY] = {
             "rssi": True,
             "firmware_version": 123,
             "last_received_at": datetime(2026, 8, 3, 1, 2, 3),
         }
-        for entity in (rssi, firmware, last_received):
+        for entity in (rssi, firmware):
             self.assertFalse(entity.available)
             self.assertIsNone(entity.native_value)
+        self.assertTrue(last_received.available)
+        self.assertIsNone(last_received.native_value)
+
+        self.coordinator.mqtt_connected = False
+        self.assertFalse(last_received.available)
 
     def test_diagnostics_are_created_once_with_stable_non_topic_ids(self):
         sensor_entities = self.run_setup(SENSOR_MODULE, self.hass, self.entry)
@@ -1773,14 +1889,10 @@ class EntityMqttTests(unittest.TestCase):
         )
         for excluded in (
             sensitive,
-            CONST_MODULE.DEFAULT_MQTT_USERNAME,
-            CONST_MODULE.DEFAULT_MQTT_PASSWORD,
+            "grit-readonly",
         ):
             self.assertNotIn(excluded, exposed)
-        self.assertNotIn(
-            CONST_MODULE.DEFAULT_MQTT_USERNAME,
-            repr(self.coordinator.data),
-        )
+        self.assertNotIn("grit-readonly", repr(self.coordinator.data))
         for entity in (internet, buttons, ip_sensor, version, branch):
             self.assertFalse(hasattr(entity, "extra_state_attributes"))
 
@@ -1831,6 +1943,61 @@ class EntityMqttTests(unittest.TestCase):
                 )
         self.coordinator.refresh_block = None
         self.assertEqual(entity.native_value, 55)
+
+    def test_gritlock_extra_state_attributes_expose_evidence_only(self):
+        entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
+        self.coordinator.gritlock_evidence_source_value = "live_gl_d"
+        self.coordinator.gritlock_live_unconfirmed_value = 2
+        attributes = entity.extra_state_attributes
+        self.assertEqual(
+            attributes,
+            {
+                "evidence_source": "live_gl_d",
+                "unconfirmed_trigger_count": 2,
+            },
+        )
+        serialized = repr(attributes)
+        for excluded in (
+            "trigger-test",
+            "grit_",
+            HUB_ID,
+            HUB_IP,
+            "broker",
+            "password",
+            "token",
+        ):
+            self.assertNotIn(excluded, serialized)
+
+        self.coordinator.gritlock_evidence_source_value = "rest_seed"
+        self.coordinator.gritlock_live_unconfirmed_value = None
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {"evidence_source": "rest_seed"},
+        )
+
+        def confirm(expected: bool) -> bool:
+            self.coordinator.gritlock_state_value = expected
+            return True
+
+        self.coordinator.gritlock_confirmation_hook = confirm
+        self.loop.run_until_complete(entity.async_lock())
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {
+                "evidence_source": "rest_seed",
+                "unconfirmed_trigger_count": 0,
+            },
+        )
+
+        self.coordinator.gritlock_confirmation_hook = None
+        with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(entity.async_unlock())
+        self.assertEqual(
+            entity.extra_state_attributes.get("unconfirmed_trigger_count"),
+            1,
+        )
+        self.assertNotIn("participants", entity.extra_state_attributes)
+        self.assertNotIn("trigger_id", entity.extra_state_attributes)
 
     def test_gritlock_state_and_post_command_confirmation(self):
         entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
@@ -1926,21 +2093,15 @@ class EntityMqttTests(unittest.TestCase):
             self.coordinator.api.hub_calls, before + [("set_gritlock", True)]
         )
 
-    def test_restart_and_reboot_buttons_use_only_explicit_fake_methods(self):
-        restart = BUTTON_MODULE.GritHubRestartServiceButton(
-            self.coordinator
-        )
-        reboot = BUTTON_MODULE.GritHubRebootHubButton(self.coordinator)
-        self.assertFalse(reboot._attr_entity_registry_enabled_default)
-
-        self.loop.run_until_complete(restart.async_press())
-        self.loop.run_until_complete(reboot.async_press())
-
-        self.assertEqual(
-            self.coordinator.api.hub_calls,
-            [("restart_service",), ("reboot_hub",)],
-        )
-        self.assertEqual(self.coordinator.refresh_calls, 0)
+    def test_restart_and_reboot_button_classes_are_removed(self):
+        self.assertFalse(hasattr(BUTTON_MODULE, "GritHubRestartServiceButton"))
+        self.assertFalse(hasattr(BUTTON_MODULE, "GritHubRebootHubButton"))
+        source = (COMPONENT_ROOT / "button.py").read_text(encoding="utf-8")
+        self.assertNotIn("grit_hub_restart_service", source)
+        self.assertNotIn("grit_hub_reboot", source)
+        api_source = (COMPONENT_ROOT / "api.py").read_text(encoding="utf-8")
+        self.assertNotIn("async def restart_service", api_source)
+        self.assertNotIn("async def reboot_hub", api_source)
 
     def test_exposed_state_and_attributes_contain_no_raw_mqtt_values(self):
         topic = "grit/private-hub/gate/private-device/status"
