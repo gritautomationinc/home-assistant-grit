@@ -669,6 +669,75 @@ class ApiHubTests(unittest.TestCase):
             )
         client.request.assert_not_awaited()
 
+    def test_lockout_502_reports_partial_apply(self):
+        client = self.client()
+
+        async def request(method, path, **kwargs):
+            raise API.GritHubApiError(
+                "PUT /api/hub/lockout failed: HTTP 502",
+                http_status=502,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.set_gritlock(True))
+        self.assertEqual(raised.exception.http_status, 502)
+        self.assertIn("partially applied", str(raised.exception))
+
+    def test_lockout_409_reports_superseded(self):
+        client = self.client()
+
+        async def request(method, path, **kwargs):
+            raise API.GritHubApiError(
+                "PUT /api/hub/lockout failed: HTTP 409",
+                http_status=409,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.set_gritlock(False))
+        self.assertEqual(raised.exception.http_status, 409)
+        self.assertIn("superseded by a newer request", str(raised.exception))
+
+    def test_health_check_falls_back_only_on_404(self):
+        client = self.client()
+        calls: list[str] = []
+
+        async def request(method, path, **kwargs):
+            calls.append(path)
+            if path == "/health-check":
+                raise API.GritHubApiError(
+                    "GET /health-check failed: HTTP 404",
+                    http_status=404,
+                )
+            return {"ok": True}
+
+        client.request = request
+        result = asyncio.run(client.health_check())
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, ["/health-check", "/"])
+
+    def test_health_check_503_does_not_fall_back_to_root(self):
+        client = self.client()
+        calls: list[str] = []
+
+        async def request(method, path, **kwargs):
+            calls.append(path)
+            raise API.GritHubApiError(
+                "GET /health-check failed: HTTP 503",
+                http_status=503,
+            )
+
+        client.request = request
+        with self.assertRaises(API.GritHubApiError) as raised:
+            asyncio.run(client.health_check())
+        self.assertEqual(calls, ["/health-check"])
+        self.assertEqual(raised.exception.http_status, 503)
+        self.assertEqual(
+            str(raised.exception),
+            "Hub health check: identity unavailable (503)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

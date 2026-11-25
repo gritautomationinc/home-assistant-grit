@@ -7,7 +7,7 @@ from collections import Counter
 from homeassistant.components.lock import LockEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import obj_id, obj_name
+from .api import GritHubApiError, obj_id, obj_name
 from .const import DEVICE_CONFIRM_TIMEOUT, DOMAIN, HUB_CONFIRM_TIMEOUT
 from .entity import GritHubEntity
 
@@ -76,6 +76,10 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
                 )
         except asyncio.CancelledError:
             raise
+        except GritHubApiError as err:
+            # Preserve displayed state. 409 is informational (superseded);
+            # 502 reports a partial Hub apply.
+            raise HomeAssistantError(str(err)) from err
         except Exception as err:
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"

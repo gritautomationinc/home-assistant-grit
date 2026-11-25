@@ -83,11 +83,18 @@ class GritHubApiClient:
             ) from err
 
     async def health_check(self) -> Any:
-        # Prefer API health check, then fall back to root.
+        """Prefer `/health-check`; fall back to `/` only on HTTP 404."""
         try:
             return await self.request("GET", "/health-check", timeout=10)
-        except GritHubApiError:
-            return await self.request("GET", "/", timeout=10)
+        except GritHubApiError as err:
+            if err.http_status == 404:
+                return await self.request("GET", "/", timeout=10)
+            if err.http_status == 503:
+                raise GritHubApiError(
+                    "Hub health check: identity unavailable (503)",
+                    http_status=503,
+                ) from err
+            raise
 
     async def get_hub(self) -> dict[str, Any] | None:
         """Read the documented current-hub response and sanitize it."""
@@ -102,12 +109,25 @@ class GritHubApiClient:
         """Set system-wide GRITLock through the bounded lockout route."""
         if not isinstance(locked, bool):
             raise GritHubApiError("GRITLock state is invalid")
-        return await self.request(
-            "PUT",
-            "/api/hub/lockout",
-            json={"state": locked},
-            timeout=REST_DISCOVERY_TIMEOUT,
-        )
+        try:
+            return await self.request(
+                "PUT",
+                "/api/hub/lockout",
+                json={"state": locked},
+                timeout=REST_DISCOVERY_TIMEOUT,
+            )
+        except GritHubApiError as err:
+            if err.http_status == 502:
+                raise GritHubApiError(
+                    "GRITLock was partially applied",
+                    http_status=502,
+                ) from err
+            if err.http_status == 409:
+                raise GritHubApiError(
+                    "GRITLock request was superseded by a newer request",
+                    http_status=409,
+                ) from err
+            raise
 
     async def set_system_led_brightness(
         self,
