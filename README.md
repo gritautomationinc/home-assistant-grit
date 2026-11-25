@@ -7,6 +7,16 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
+## Notice
+
+This is a community-maintained, unofficial Home Assistant integration for GRIT Hub. It is published by GRIT Automation, Inc. as a convenience.
+
+It is provided AS IS, without warranty of any kind. GRIT Automation, Inc. does not provide support for it and does not guarantee updates, fixes, compatibility with any Home Assistant or GRIT Hub version, or continued availability. Use at your own risk.
+
+Issues and pull requests are welcome, but may not be answered.
+
+See [LICENSE](LICENSE) for the full warranty disclaimer.
+
 > **Release status:** `v0.1.2` is the latest prepared release and is ready for
 > publication after successful two-system live acceptance. It is not yet tagged
 > or published. The published `v0.1.1` release is superseded but remains the
@@ -14,7 +24,7 @@ designed for installation through HACS as a custom integration.
 > Custom Repository and is not a default-catalogue listing.
 
 This project is experimental, provided as-is, and is not affiliated with,
-endorsed by, or supported by GRIT or GRIT Automation.
+endorsed by, or supported by GRIT.
 
 > [!CAUTION]
 > GRIT equipment can operate gates and physical access-control devices. This
@@ -106,15 +116,15 @@ Custom Repository:
 
 1. In HACS, open **Custom repositories**.
 2. Paste the verified final repository URL:
-   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`.
+   `https://github.com/gritautomationinc/home-assistant-grit`.
 3. Select **Integration** as the category.
 4. Add the repository and install **GRIT Hub**.
 5. Restart Home Assistant.
 6. Go to **Settings > Devices & services > Add integration** and choose
    **GRIT Hub**.
 
-The repository transfer to GoDeeGo Productions and the final URL are verified.
-[`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
+The canonical repository URL is verified.
+[`v0.1.1`](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.1.1)
 is the latest published release. v0.1.2 is prepared after successful two-system
 live acceptance but has not yet been tagged or published. See the full
 [Installation guide](docs/INSTALLATION.md).
