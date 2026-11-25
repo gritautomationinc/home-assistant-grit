@@ -395,12 +395,18 @@ class DocumentationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("one latest immutable GRITLock state observation", architecture)
-        self.assertIn("If one or more fresh observations have `gte=1`", architecture)
+        self.assertIn(
+            "Otherwise, if one or more fresh observations have `gle=1`",
+            architecture,
+        )
         self.assertIn(
             "every fresh observed trigger participates",
             " ".join(architecture.split()),
         )
-        self.assertIn("sparse valid one-frame burst", architecture)
+        self.assertIn(
+            "sparse valid one-frame burst",
+            architecture.replace("\n", " "),
+        )
         self.assertIn(
             "only when every member is represented by current valid `gls`",
             " ".join(architecture.split()),
@@ -413,8 +419,8 @@ class DocumentationTests(unittest.TestCase):
             "Every valid observation restarts one 250 ms quiet", architecture
         )
         self.assertIn(
-            "REST `gritLockEnabled` metadata does not mutate or redefine",
-            architecture,
+            "(`gritLockEnabled=true`), only those triggers participate, and a burst settles",
+            " ".join(architecture.split()),
         )
         self.assertIn(
             "`gls=0` is unlocked (`False`)",
@@ -422,7 +428,10 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertIn("exact `False` is authority, not", " ".join(entities.split()))
         self.assertIn("including a sparse one-frame burst", entities)
-        self.assertIn("all-`gte=0` burst uses all fresh", troubleshooting)
+        self.assertIn(
+            "all-`gle=0` (or missing `gle`) burst uses all fresh",
+            troubleshooting,
+        )
         self.assertIn("mixed burst uses exactly", " ".join(troubleshooting.split()))
         self.assertIn("preserves an earlier valid state", troubleshooting)
         self.assertIn("No-op requests still send REST", entities)

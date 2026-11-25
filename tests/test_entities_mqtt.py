@@ -622,6 +622,17 @@ class FakeCoordinator:
             return False
         self.mqtt_receive_sequence += 1
         return self.gritlock_confirmation_hook(expected)
+
+    def gritlock_unconfirmed_trigger_count(
+        self,
+        *,
+        after_connection_generation: int,
+        after_receive_sequence: int,
+    ) -> int | None:
+        if not self.gritlock_participating_trigger_ids:
+            return None
+        return len(self.gritlock_participating_trigger_ids)
+
     def set_mqtt_connected(self, connected: bool) -> bool:
 
         if self.mqtt_connected == connected:
@@ -1831,7 +1842,7 @@ class EntityMqttTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.coordinator.gritlock_state_value = value
                 self.assertIs(entity.is_locked, value)
-                self.assertIs(entity.available, isinstance(value, bool))
+                self.assertTrue(entity.available)
 
         self.coordinator.gritlock_state_value = None
         with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
@@ -1910,8 +1921,10 @@ class EntityMqttTests(unittest.TestCase):
         with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
             self.loop.run_until_complete(entity.async_lock())
 
-        self.assertFalse(entity.available)
-        self.assertEqual(self.coordinator.api.hub_calls, before)
+        self.assertTrue(entity.available)
+        self.assertEqual(
+            self.coordinator.api.hub_calls, before + [("set_gritlock", True)]
+        )
 
     def test_restart_and_reboot_buttons_use_only_explicit_fake_methods(self):
         restart = BUTTON_MODULE.GritHubRestartServiceButton(

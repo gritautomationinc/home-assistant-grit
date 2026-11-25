@@ -33,6 +33,7 @@ _ALLOWED_MQTT_PAYLOAD_KEYS = frozenset(
         "state",
         "s",
         "gls",
+        "gle",
         "gte",
         "onlineStatus",
         "online",

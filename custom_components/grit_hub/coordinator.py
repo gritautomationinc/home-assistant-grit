@@ -89,7 +89,9 @@ _GRITLOCK_STARTUP_QUIET_TIME = _GRITLOCK_SETTLE_TIME
 _MAX_MQTT_STATE_WAITERS = 64
 
 _GRITLOCK_SOURCE_STARTUP = "startup_status"
-_GRITLOCK_SOURCE_LIVE = "live_gl"
+_GRITLOCK_SOURCE_STATUS = "device_status"
+_GRITLOCK_SOURCE_REST_SEED = "rest_seed"
+_GRITLOCK_SOURCE_LIVE = "live_gl_d"
 _GRITLOCK_SOURCE_DISAGREEMENT = "disagreement"
 
 _INVALID = object()
@@ -97,9 +99,9 @@ _INVALID = object()
 
 @dataclass(frozen=True, slots=True)
 class _GritlockObservation:
-    """One bounded authoritative trigger /gl observation."""
+    """One bounded authoritative trigger GRITLock observation (device-originated)."""
 
-    explicitly_participating: bool
+    explicitly_participating: bool | None
     locked: bool
     receive_sequence: int
     received_monotonic: float
@@ -107,7 +109,7 @@ class _GritlockObservation:
 
 @dataclass(slots=True)
 class _GritlockBurst:
-    """One continuous bounded trigger /gl transition burst."""
+    """One continuous bounded trigger GRITLock transition burst."""
 
     connection_generation: int
     observations: dict[str, _GritlockObservation]
@@ -566,6 +568,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _GritlockStateObservation | None
         ) = None
         self._gritlock_live_burst: _GritlockBurst | None = None
+        self._gritlock_status_snapshot: dict[str, _GritlockObservation] = {}
         self._gritlock_settle_task: asyncio.Task[None] | None = None
         self._reconciliation_task: asyncio.Task[None] | None = None
         self._reconcile_again = False
@@ -1623,6 +1626,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Discard continuous MQTT evidence and authoritative state."""
         self._cancel_gritlock_settle_task()
         self._gritlock_live_burst = None
+        self._gritlock_status_snapshot.clear()
         self._gritlock_state_observation = None
 
     def _publish_gritlock_state_observation(
@@ -1649,6 +1653,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or source
             not in {
                 _GRITLOCK_SOURCE_STARTUP,
+                _GRITLOCK_SOURCE_STATUS,
                 _GRITLOCK_SOURCE_LIVE,
                 _GRITLOCK_SOURCE_DISAGREEMENT,
             }
@@ -1675,8 +1680,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._wake_mqtt_state_waiters()
         return True
 
-    @staticmethod
     def _evaluate_gritlock_burst(
+        self,
         burst: _GritlockBurst,
     ) -> tuple[bool | None, frozenset[str], bool]:
         """Return state, participants, and explicit disagreement."""
@@ -1687,7 +1692,16 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for trigger_id, observation in burst.observations.items()
             if observation.explicitly_participating
         )
-        participants = explicit_participants or frozenset(burst.observations)
+        rest_participants, rest_usable = self._rest_gritlock_participants()
+        if rest_usable and rest_participants:
+            observed_triggers = frozenset(burst.observations)
+            # Require device evidence from every REST-participating trigger to
+            # settle a system GRITLock state from live observations.
+            if not rest_participants.issubset(observed_triggers):
+                return None, frozenset(), False
+            participants = rest_participants
+        else:
+            participants = explicit_participants or frozenset(burst.observations)
         states = {
             burst.observations[trigger_id].locked
             for trigger_id in participants
@@ -2506,7 +2520,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         after_receive_sequence: int,
         timeout: float,
     ) -> bool:
-        """Wait for one fresh live /gl observation on this connection."""
+        """Wait for one fresh live /gl-d observation on this connection."""
         if (
             not isinstance(expected, bool)
             or isinstance(after_connection_generation, bool)
@@ -2573,17 +2587,59 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except asyncio.TimeoutError:
             return result() is True
 
+    def gritlock_unconfirmed_trigger_count(
+        self,
+        *,
+        after_connection_generation: int,
+        after_receive_sequence: int,
+    ) -> int | None:
+        """Best-effort count of missing trigger confirmations for a lock/unlock."""
+        participants, usable = self._rest_gritlock_participants()
+        if not usable or not participants:
+            return None
+
+        if (
+            not self._mqtt_connected
+            or self._mqtt_connection_generation != after_connection_generation
+        ):
+            return len(participants)
+
+        burst = self._gritlock_live_burst
+        if (
+            burst is None
+            or burst.connection_generation != after_connection_generation
+        ):
+            return len(participants)
+
+        observed = {
+            trigger_id
+            for trigger_id, obs in burst.observations.items()
+            if obs.receive_sequence > after_receive_sequence
+        }
+        return len(set(participants) - observed)
+
     def _apply_gritlock_observation(
         self,
         trigger_id: str,
         payload: dict[str, Any],
     ) -> bool:
-        """Add strict trigger /gl evidence to the continuous live burst."""
+        """Add strict trigger /gl-d evidence to the continuous live burst."""
+        # Participation is derived from REST `gritLockEnabled` and MQTT `gle`
+        # (gritLockEnabled). `gle` is treated only as optional device evidence.
+        explicitly_participating_value = payload.get("gle", _INVALID)
         explicitly_participating = _strict_binary_bool(
-            payload.get("gte", _INVALID)
+            explicitly_participating_value
         )
+        if explicitly_participating is _INVALID:
+            if explicitly_participating_value is _INVALID:
+                explicitly_participating = None
+            else:
+                _LOGGER.debug(
+                    "GRIT MQTT message rejected: invalid GRITLock participation"
+                )
+                return False
         locked = _strict_binary_bool(payload.get("gls", _INVALID))
-        if explicitly_participating is _INVALID or locked is _INVALID:
+        if locked is _INVALID:
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid GRITLock state"
             )
@@ -2639,6 +2695,136 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ensure_gritlock_settle_task(burst)
         self._wake_mqtt_state_waiters()
         return True
+
+    def _apply_gritlock_status_observation(
+        self,
+        trigger_id: str,
+        payload: dict[str, Any],
+        *,
+        receive_sequence: int,
+        received_monotonic: float,
+    ) -> bool:
+        """Apply trigger `/sts` GRITLock evidence as non-confirming device status."""
+        explicitly_participating_value = payload.get("gle", _INVALID)
+        explicitly_participating = _strict_binary_bool(
+            explicitly_participating_value
+        )
+        if explicitly_participating is _INVALID:
+            if explicitly_participating_value is _INVALID:
+                explicitly_participating = None
+            else:
+                return False
+
+        locked = _strict_binary_bool(payload.get("gls", _INVALID))
+        if locked is _INVALID:
+            return False
+
+        self._gritlock_status_snapshot[trigger_id] = _GritlockObservation(
+            explicitly_participating=explicitly_participating,
+            locked=locked,
+            receive_sequence=receive_sequence,
+            received_monotonic=received_monotonic,
+        )
+
+        rest_participants, rest_usable = self._rest_gritlock_participants()
+        if rest_usable and rest_participants:
+            if not rest_participants.issubset(self._gritlock_status_snapshot):
+                return True
+            participants = frozenset(rest_participants)
+        else:
+            explicit_participants = frozenset(
+                tid
+                for tid, obs in self._gritlock_status_snapshot.items()
+                if obs.explicitly_participating
+            )
+            participants = (
+                explicit_participants
+                or frozenset(self._gritlock_status_snapshot)
+            )
+
+        locked_values: set[bool] = set()
+        first_receive_sequence: int | None = None
+        last_receive_sequence: int | None = None
+        for tid in participants:
+            obs = self._gritlock_status_snapshot.get(tid)
+            if obs is None:
+                return True
+            locked_values.add(obs.locked)
+            first_receive_sequence = (
+                obs.receive_sequence
+                if first_receive_sequence is None
+                else min(first_receive_sequence, obs.receive_sequence)
+            )
+            last_receive_sequence = (
+                obs.receive_sequence
+                if last_receive_sequence is None
+                else max(last_receive_sequence, obs.receive_sequence)
+            )
+
+        if first_receive_sequence is None or last_receive_sequence is None:
+            return True
+
+        if len(locked_values) == 1:
+            locked_value = next(iter(locked_values))
+            self._publish_gritlock_state_observation(
+                state=locked_value,
+                participants=participants,
+                source=_GRITLOCK_SOURCE_STATUS,
+                connection_generation=self._mqtt_connection_generation,
+                first_receive_sequence=first_receive_sequence,
+                last_receive_sequence=last_receive_sequence,
+            )
+        else:
+            self._publish_gritlock_state_observation(
+                state=None,
+                participants=participants,
+                source=_GRITLOCK_SOURCE_DISAGREEMENT,
+                connection_generation=self._mqtt_connection_generation,
+                first_receive_sequence=first_receive_sequence,
+                last_receive_sequence=last_receive_sequence,
+            )
+
+        return True
+
+    def _maybe_seed_gritlock_state_from_rest(
+        self, *, devices: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """Seed unknown GRITLock state from REST inventory when consistent.
+
+        This is not device-confirmed; it is a hub REST-derived value.
+        """
+        if self._gritlock_state_observation is not None:
+            return
+
+        participants, usable = self._rest_gritlock_participants(devices)
+        if not usable or not participants:
+            return
+
+        state_values: list[bool] = []
+        seen_participants: set[str] = set()
+        for trigger in devices.get("trigger", []):
+            trigger_id = trigger.get("id")
+            if not isinstance(trigger_id, str) or trigger_id not in participants:
+                continue
+            gritlock_state = trigger.get("gritLockState")
+            if not isinstance(gritlock_state, bool):
+                return
+            seen_participants.add(trigger_id)
+            state_values.append(gritlock_state)
+
+        if seen_participants != set(participants):
+            return
+        if len(set(state_values)) != 1:
+            return
+
+        self._gritlock_state_observation = _GritlockStateObservation(
+            state=state_values[0],
+            connection_generation=self._mqtt_connection_generation,
+            first_receive_sequence=0,
+            last_receive_sequence=0,
+            source=_GRITLOCK_SOURCE_REST_SEED,
+            participants=participants,
+        )
 
     async def _async_update_data(self) -> dict[str, Any]:
         self._refresh_sequence += 1
@@ -2725,6 +2911,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._hub_update_sequence = refresh_sequence
         if triggers_refreshed:
             self._gritlock_update_sequence = refresh_sequence
+
+        self._maybe_seed_gritlock_state_from_rest(devices=data["devices"])
         return data
 
     def handle_mqtt_message(
@@ -2788,6 +2976,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         root_message_type = normalized_message_type.split("/", 1)[0].lower()
+        gritlock_status_frame = (
+            device_type == "trigger" and root_message_type == "sts"
+        )
         rfid_event_scheduled = (
             device_type == "rfid"
             and normalized_message_type in {"s", "st"}
@@ -2831,15 +3022,39 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return False
 
-        if device_type == "trigger" and root_message_type == "gl":
-            return self._apply_gritlock_observation(
+        # GRITLock completion evidence is device-originated on `/gl-d`.
+        # Hub-originated `/gl` commands are not state authority.
+        if device_type == "trigger" and root_message_type == "gl-d":
+            accepted = self._apply_gritlock_observation(
                 normalized_device_id, payload
             )
+            if accepted:
+                self._wake_mqtt_state_waiters()
+            return accepted
 
         updates = _payload_state(
             device_type, normalized_message_type, payload
         )
         if updates is None:
+            if (
+                gritlock_status_frame
+                and self._mqtt_connected
+                and not gritlock_startup_accepted
+                and self._gritlock_startup_snapshot is None
+            ):
+                receive_sequence = self._mqtt_receive_sequence + 1
+                received_monotonic = time.monotonic()
+                accepted = self._apply_gritlock_status_observation(
+                    normalized_device_id,
+                    payload,
+                    receive_sequence=receive_sequence,
+                    received_monotonic=received_monotonic,
+                )
+                if not accepted:
+                    return False
+                self._mqtt_receive_sequence = receive_sequence
+                self._wake_mqtt_state_waiters()
+                return True
             if gritlock_startup_accepted or rfid_event_scheduled:
                 self._wake_mqtt_state_waiters()
                 return True

@@ -126,7 +126,7 @@ supported Home Assistant APIs, and reloads once.
 | --- | --- |
 | Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
 | RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
-| GRITLock | One latest immutable observation published by current-connection startup `/sts` or `/tel` `gls`, a naturally settled live `/gl` burst, or explicit disagreement |
+| GRITLock | One latest immutable observation published by current-connection startup `/sts` or `/tel` `gls`, a naturally settled live `/gl-d` burst, or explicit disagreement |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
 
@@ -134,7 +134,7 @@ Gate commands capture an MQTT sequence boundary before REST and require a newer
 matching MQTT observation. RFID and collector commands capture their individual
 REST generation before REST and require newer matching detail. GRITLock commands
 capture the MQTT connection generation and receive sequence before REST, then
-wait against the same latest-observation channel for matching fresh live `/gl`
+wait against the same latest-observation channel for matching fresh live `/gl-d`
 authority. The LED writes via REST and requires a newer matching full hub
 refresh. No current displayed value or HTTP success alone confirms a command.
 
@@ -148,23 +148,29 @@ startup state is never taken from REST.
 
 The coordinator retains exactly one latest immutable GRITLock state observation.
 It contains `state`, the MQTT connection generation, first and last supporting
-receive sequences, a bounded source (`startup_status`, `live_gl`, or
-`disagreement`), and at most 64 participant identifiers. The entity derives its
+receive sequences, a bounded source (`startup_status`, `device_status`,
+`rest_seed`, `live_gl_d`, or `disagreement`), and at most 64 participant
+identifiers. The entity derives its
 state only from this record: `gls=1` is locked (`True`), `gls=0` is unlocked
 (`False`), and no valid authority or explicit disagreement is Unknown (`None`).
 Exact `False` remains distinct from `None`.
 
-Live `trigger/<id>/gl` frames enter one continuous bounded quiet-settled burst.
-The latest valid strict `gte` and `gls` observation per trigger replaces only
-that trigger. If one or more fresh observations have `gte=1`, exactly that fresh
-subset participates. If every fresh observation has `gte=0`, every fresh
-observed trigger participates; this includes a sparse valid one-frame burst.
+Live `trigger/<id>/gl-d` frames enter one continuous bounded quiet-settled
+burst. The latest valid strict `gle` and `gls` observation per trigger replaces
+only that trigger.
+
+If REST inventory provides a usable participating trigger set
+(`gritLockEnabled=true`), only those triggers participate, and a burst settles
+only when every REST-participating trigger has provided a fresh valid `gls`.
+Otherwise, if one or more fresh observations have `gle=1`, exactly that fresh
+subset participates. Otherwise (all fresh observations have `gle=0` or omit
+`gle`), every fresh observed trigger participates; this includes a sparse valid
+one-frame burst.
 All selected participants must agree on `gls`. Unanimous one publishes Locked,
 unanimous zero publishes Unlocked, and complete selected-participant
 disagreement publishes Unknown. Malformed, incomplete, overflowing, timed-out,
 or unsettled evidence publishes no new authority and preserves the last valid
-state. REST `gritLockEnabled` metadata does not mutate or redefine an active
-live burst, and REST `gritLockState` is never displayed.
+state. REST `gritLockState` is never displayed.
 
 At startup or reconnect, the exact matching SUBACK opens one bounded
 connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
@@ -179,7 +185,7 @@ unique known reporters form the startup fallback. Messages without `gls` do not
 enter or delay the snapshot. Every valid observation restarts one 250 ms quiet
 boundary; unanimous or disagreeing evidence then publishes before the five-
 second window expires. Startup consensus publishes through the same latest-
-observation field as live `/gl`, but its
+observation field as live `/gl-d`, but its
 `startup_status` source cannot confirm a command.
 
 ### GRITLock commands and freshness
@@ -191,7 +197,7 @@ generation and receive sequence before REST. After REST succeeds,
 waiter registration, preventing a lost wakeup. A matching observation that
 arrives while REST is awaiting remains eligible.
 
-Confirmation requires a naturally settled `live_gl` observation on the captured
+Confirmation requires a naturally settled `live_gl_d` observation on the captured
 connection whose first and last supporting receive sequences are strictly newer
 than the captured boundary and whose state exactly matches the request. Startup
 status, stale or mixed-boundary evidence, HTTP success, the current displayed
@@ -203,8 +209,8 @@ No-op Lock or Unlock requests are not short-circuited: the explicit REST desired
 state is still sent and fresh matching live evidence is still required. A
 failed REST request or command timeout preserves the latest valid displayed
 state. Complete disagreement explicitly publishes Unknown. Disconnect clears
-the latest observation, makes the entity unavailable, wakes waiters to fail,
-and cancels the bounded burst task; reconnect increments the connection
+the latest observation, wakes waiters to fail, and cancels the bounded burst
+task; reconnect increments the connection
 generation and begins new startup hydration.
 
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at

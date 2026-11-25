@@ -917,14 +917,14 @@ class CoordinatorMqttTests(unittest.TestCase):
             instance,
             device_type="trigger",
             device_id=trigger_id,
-            message_type="gl",
-            payload={"gte": gte, "gls": gls},
+            message_type="gl-d",
+            payload={"gle": gte, "gls": gls},
         )
 
-    def settle_gritlock(self, instance):
+    def settle_gritlock(self, instance, *, now: float | None = None):
         burst = instance._gritlock_live_burst
         self.assertIsNotNone(burst)
-        return instance._settle_gritlock_burst(burst, force=True)
+        return instance._settle_gritlock_burst(burst, force=True, now=now)
 
     def test_rest_gritlock_state_is_not_authoritative(self):
         devices = _device_map()
@@ -952,15 +952,18 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertIs(instance.gritlock_state, True)
         self.assertEqual(
             instance.gritlock_participating_trigger_ids,
-            frozenset(f"trigger-{index}" for index in range(7)),
+            frozenset(f"trigger-{index}" for index in range(9)),
         )
 
-        self.assertTrue(self.send_gritlock(instance, "trigger-8", 0, 0))
+        for index in range(9):
+            self.assertTrue(
+                self.send_gritlock(instance, f"trigger-{index}", 0, 0)
+            )
         self.assertTrue(self.settle_gritlock(instance))
         self.assertIs(instance.gritlock_state, False)
         self.assertEqual(
             instance.gritlock_participating_trigger_ids,
-            frozenset({"trigger-8"}),
+            frozenset(f"trigger-{index}" for index in range(9)),
         )
 
     def test_all_gte_zero_bursts_support_both_states(self):
@@ -994,7 +997,8 @@ class CoordinatorMqttTests(unittest.TestCase):
     def test_complete_selected_participant_disagreement_is_unknown(self):
         instance = self.gritlock_coordinator(2)
         self.send_gritlock(instance, "trigger-0", 1, 1)
-        self.settle_gritlock(instance)
+        self.send_gritlock(instance, "trigger-1", 1, 1)
+        self.assertTrue(self.settle_gritlock(instance))
         self.assertIs(instance.gritlock_state, True)
 
         self.send_gritlock(instance, "trigger-0", 1, 1)
@@ -1059,11 +1063,15 @@ class CoordinatorMqttTests(unittest.TestCase):
         instance.data["devices"]["trigger"][0]["gritLockEnabled"] = False
         instance.data["devices"]["trigger"][1]["gritLockEnabled"] = True
         self.assertIs(instance._gritlock_live_burst, burst)
+        self.assertFalse(self.settle_gritlock(instance))
+        self.assertIsNone(instance.gritlock_state)
+
+        self.send_gritlock(instance, "trigger-1", 0, 0)
         self.assertTrue(self.settle_gritlock(instance))
         self.assertIs(instance.gritlock_state, False)
         self.assertEqual(
             instance.gritlock_participating_trigger_ids,
-            frozenset({"trigger-0"}),
+            frozenset({"trigger-1"}),
         )
 
     def test_later_unrelated_status_does_not_overwrite_live_state(self):
@@ -1098,12 +1106,25 @@ class CoordinatorMqttTests(unittest.TestCase):
         with mock.patch.object(
             coordinator_module.time,
             "monotonic",
-            side_effect=(10.0, 10.3),
+            side_effect=(
+                10.0,
+                10.0,
+                10.1,
+                10.1,
+                10.5,
+                10.5,
+                10.6,
+                10.6,
+            ),
         ):
             self.send_gritlock(instance, "trigger-0", 0, 1)
+            self.send_gritlock(instance, "trigger-1", 0, 1)
+            self.assertTrue(self.settle_gritlock(instance, now=10.2))
+            self.assertIs(instance.gritlock_state, True)
+            self.send_gritlock(instance, "trigger-0", 0, 0)
             self.send_gritlock(instance, "trigger-1", 0, 0)
         self.assertIs(instance.gritlock_state, True)
-        self.settle_gritlock(instance)
+        self.assertTrue(self.settle_gritlock(instance, now=10.7))
         self.assertIs(instance.gritlock_state, False)
 
     def test_gritlock_rejection_log_is_generic(self):
@@ -1143,6 +1164,7 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertFalse(
             instance._settle_gritlock_burst(obsolete, force=True)
         )
+        self.send_gritlock(instance, "trigger-0", 0, 0)
         self.assertTrue(self.settle_gritlock(instance))
         self.assertIs(instance.gritlock_state, False)
     def test_rest_refresh_re_sanitizes_preserved_state(self):
@@ -2208,12 +2230,21 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("device-rfid", combined)
         self.assertEqual(api.telemetry_calls, calls_after_failure)
 
-    def gritlock_instance(self, count=2, api=None):
+    def gritlock_instance(
+        self,
+        count: int = 2,
+        api: FakeApi | None = None,
+        *,
+        enabled_trigger_ids: set[str] | None = None,
+    ):
         devices = _device_map()
         devices["trigger"] = [
             {"id": f"trigger-{index}", "gritLockEnabled": True}
             for index in range(count)
         ]
+        if enabled_trigger_ids is not None:
+            for device in devices["trigger"]:
+                device["gritLockEnabled"] = device["id"] in enabled_trigger_ids
         instance = self.coordinator(api or FakeApi(), devices)
         instance.set_mqtt_connected(True)
         instance._clear_gritlock_startup_snapshot()
@@ -2226,8 +2257,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "trigger",
                 trigger_id,
-                "gl",
-                {"gte": gte, "gls": gls},
+                "gl-d",
+                {"gle": gte, "gls": gls},
             ):
                 raise AssertionError("fabricated GRITLock frame was rejected")
 
@@ -2243,7 +2274,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, timeout=1)
 
     async def test_dion_sparse_unlock_confirms_on_continuous_channel(self):
-        instance = self.gritlock_instance(9)
+        instance = self.gritlock_instance(9, enabled_trigger_ids={"trigger-8"})
         boundary_connection = instance.mqtt_connection_generation
         boundary_sequence = instance.mqtt_receive_sequence
         confirmation = asyncio.create_task(
@@ -2267,7 +2298,10 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_dion_mixed_lock_confirms_from_gte_one_subset(self):
-        instance = self.gritlock_instance(9)
+        instance = self.gritlock_instance(
+            9,
+            enabled_trigger_ids={f"trigger-{index}" for index in range(7)},
+        )
         connection = instance.mqtt_connection_generation
         boundary = instance.mqtt_receive_sequence
         confirmation = asyncio.create_task(
@@ -2280,7 +2314,11 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         )
         frames = tuple(
             (f"trigger-{index}", 1, 1) for index in range(7)
-        ) + (("trigger-7", 0, 0), ("trigger-8", 0, 1))
+        ) + (
+            # Non-participants may report any state without affecting confirmation.
+            ("trigger-7", 0, 0),
+            ("trigger-8", 0, 0),
+        )
         await self.settle_gritlock(instance, frames)
         self.assertTrue(await asyncio.wait_for(confirmation, timeout=1))
         self.assertIs(instance.gritlock_state, True)
@@ -2489,8 +2527,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         instance.data = refreshed
         self.assertIs(instance._gritlock_live_burst, burst)
         self.assertEqual(set(burst.observations), {"trigger-0"})
-        self.assertTrue(instance._settle_gritlock_burst(burst, force=True))
-        self.assertIs(instance.gritlock_state, False)
+        self.assertFalse(instance._settle_gritlock_burst(burst, force=True))
+        self.assertIsNone(instance.gritlock_state)
 
     async def test_external_burst_publishes_only_after_natural_quiet(self):
         instance = self.gritlock_instance(2)

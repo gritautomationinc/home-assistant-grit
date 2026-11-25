@@ -44,12 +44,9 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
 
     @property
     def available(self) -> bool:
-        state = self.coordinator.gritlock_state
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.mqtt_connected
-            and isinstance(state, bool)
-        )
+        # Do not become unavailable solely because GRITLock state is currently
+        # unknown; remain available when hub REST polling is succeeding.
+        return bool(getattr(self.coordinator, "last_update_success", False))
 
     @property
     def is_locked(self) -> bool | None:
@@ -63,22 +60,22 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
         await self._async_set_gritlock(False)
 
     async def _async_set_gritlock(self, locked: bool) -> None:
-        if not self.coordinator.mqtt_connected:
-            raise HomeAssistantError(
-                "GRITLock state could not be confirmed"
-            )
         connection_generation = (
             self.coordinator.mqtt_connection_generation
         )
         confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_gritlock(locked)
-            confirmed = await self.coordinator.async_wait_for_gritlock_state(
-                locked,
-                after_connection_generation=connection_generation,
-                after_receive_sequence=confirmation_boundary,
-                timeout=HUB_CONFIRM_TIMEOUT,
-            )
+            confirmed = False
+            if self.coordinator.mqtt_connected:
+                confirmed = (
+                    await self.coordinator.async_wait_for_gritlock_state(
+                        locked,
+                        after_connection_generation=connection_generation,
+                        after_receive_sequence=confirmation_boundary,
+                        timeout=HUB_CONFIRM_TIMEOUT,
+                    )
+                )
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -86,6 +83,15 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
                 "GRITLock state could not be confirmed"
             ) from err
         if not confirmed:
+            missing = self.coordinator.gritlock_unconfirmed_trigger_count(
+                after_connection_generation=connection_generation,
+                after_receive_sequence=confirmation_boundary,
+            )
+            if missing:
+                raise HomeAssistantError(
+                    f"GRITLock state could not be confirmed "
+                    f"(missing {missing} trigger confirmations)"
+                )
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             )

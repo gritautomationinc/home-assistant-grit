@@ -848,8 +848,8 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
                     "hub-expected",
                     "trigger",
                     "trigger-one",
-                    "gl",
-                    {"gte": 0, "gls": 1},
+                    "gl-d",
+                    {"gle": 0, "gls": 1},
                 )
             )
             burst = instance._gritlock_live_burst
@@ -879,7 +879,7 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             instance._gritlock_state_observation.source,
             coordinator_module._GRITLOCK_SOURCE_DISAGREEMENT,
         )
-        self.assertFalse(LOCK_MODULE.GritHubSystemLock(instance).available)
+        self.assertTrue(LOCK_MODULE.GritHubSystemLock(instance).available)
     async def test_trigger_status_hydrates_exact_locked_and_unlocked_states(self):
         for locked, topic in ((True, "sts"), (False, "tel")):
             with self.subTest(locked=locked, topic=topic):
@@ -1000,7 +1000,7 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
         entity = LOCK_MODULE.GritHubSystemLock(instance)
         self.assertIsNone(instance.gritlock_state)
         self.assertIsNone(entity.is_locked)
-        self.assertFalse(entity.available)
+        self.assertTrue(entity.available)
 
     async def test_startup_snapshot_cannot_cross_command_boundary(self):
         devices = coordinator_tests._device_map()

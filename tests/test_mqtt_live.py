@@ -757,13 +757,13 @@ class GritLiveMqttTests(unittest.TestCase):
             fake,
             None,
             FakeMessage(
-                b'{"state": true, "gls": 1, "gte": 0, "user": "person", '
+                b'{"state": true, "gls": 1, "gle": 0, "user": "person", '
                 b'"credential": "secret", "nested": {"raw": true}}',
                 FABRICATED_TOPIC,
             ),
         )
         self.assertEqual(
-            received[-1][-1], {"state": True, "gls": 1, "gte": 0}
+            received[-1][-1], {"state": True, "gls": 1, "gle": 0}
         )
         client.stop()
 
@@ -779,11 +779,11 @@ class GritLiveMqttTests(unittest.TestCase):
             fake,
             None,
             FakeMessage(
-                b'{"gls": 0, "gte": 0}',
-                f"grit/{FABRICATED_HUB_ID}/trigger/{FABRICATED_DEVICE_ID}/gl",
+                b'{"gls": 0, "gle": 0}',
+                f"grit/{FABRICATED_HUB_ID}/trigger/{FABRICATED_DEVICE_ID}/gl-d",
             ),
         )
-        self.assertEqual(received[-1][-1], {"gls": 0, "gte": 0})
+        self.assertEqual(received[-1][-1], {"gls": 0, "gle": 0})
         client.stop()
     def test_tls_disabled_invokes_no_tls_methods(self) -> None:
         factory = FakeClientFactory()
