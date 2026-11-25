@@ -578,8 +578,6 @@ class ApiHubTests(unittest.TestCase):
         asyncio.run(client.set_gritlock(True))
         asyncio.run(client.set_gritlock(False))
         asyncio.run(client.set_system_led_brightness(HUB_ID, 60))
-        asyncio.run(client.restart_service())
-        asyncio.run(client.reboot_hub())
 
         timeout = API.REST_DISCOVERY_TIMEOUT
         self.assertEqual(
@@ -603,10 +601,10 @@ class ApiHubTests(unittest.TestCase):
                         "timeout": timeout,
                     },
                 ),
-                ("PUT", "/api/hub/restart", {"timeout": timeout}),
-                ("PUT", "/api/hub/reboot", {"timeout": timeout}),
             ],
         )
+        self.assertFalse(hasattr(client, "restart_service"))
+        self.assertFalse(hasattr(client, "reboot_hub"))
 
     def test_invalid_command_inputs_fail_before_request(self):
         client = self.client()

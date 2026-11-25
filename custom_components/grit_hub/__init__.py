@@ -14,6 +14,7 @@ from homeassistant.exceptions import (
     ConfigEntryNotReady,
     HomeAssistantError,
 )
+from homeassistant.helpers import entity_registry as er
 
 from .api import GritHubApiClient, GritHubApiError
 from .const import (
@@ -52,6 +53,14 @@ _MQTT_CONFIG_ERROR = (
     "MQTT configuration is invalid; reconfigure this GRIT Hub entry"
 )
 _MQTT_NOT_READY_ERROR = "MQTT connection is not ready"
+
+# Removed in v0.2.0 (F11): Hub requireHumanAdmin routes always 403 for API tokens.
+_REMOVED_BUTTON_UNIQUE_IDS = frozenset(
+    {
+        "grit_hub_restart_service",
+        "grit_hub_reboot",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +237,17 @@ def _apply_mqtt_connection_state(
     ready_future = runtime.ready_future
     if ready_future is not None and not ready_future.done():
         ready_future.set_result(connected)
+
+
+def _remove_retired_button_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Remove Restart/Reboot button registry entries left from older versions."""
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.unique_id in _REMOVED_BUTTON_UNIQUE_IDS:
+            registry.async_remove(entity.entity_id)
 
 
 def _remove_compatibility_storage(
@@ -428,6 +448,7 @@ async def async_setup_entry(
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
             "coordinator": coordinator
         }
+        _remove_retired_button_entities(hass, entry)
         forwarding_started = True
         await hass.config_entries.async_forward_entry_setups(
             entry,

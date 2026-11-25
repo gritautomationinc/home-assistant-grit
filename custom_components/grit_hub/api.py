@@ -131,22 +131,6 @@ class GritHubApiClient:
             timeout=REST_DISCOVERY_TIMEOUT,
         )
 
-    async def restart_service(self) -> Any:
-        """Restart the GRIT service without accepting arbitrary input."""
-        return await self.request(
-            "PUT",
-            "/api/hub/restart",
-            timeout=REST_DISCOVERY_TIMEOUT,
-        )
-
-    async def reboot_hub(self) -> Any:
-        """Reboot the hub without accepting arbitrary input."""
-        return await self.request(
-            "PUT",
-            "/api/hub/reboot",
-            timeout=REST_DISCOVERY_TIMEOUT,
-        )
-
     async def get_collection(self, device_type: str) -> list[dict[str, Any]]:
         data = await self.request("GET", f"/api/{quote(device_type)}")
         items = normalise_list(data)

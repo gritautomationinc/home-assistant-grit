@@ -35,7 +35,7 @@ endorsed by, or supported by GRIT or GRIT Automation.
 - Collector, solenoid, latch, and powerbank switches, with deterministic
   individual-detail confirmation for collectors.
 - Hub connectivity, software, device-count, MQTT, and per-device diagnostics.
-- System LED brightness, service restart, hub reboot, refresh, and locate
+- System LED brightness, refresh, and locate
   controls.
 - Config-entry reconfiguration for API token rotation and MQTT settings.
 
@@ -80,7 +80,7 @@ during startup hydration.
 | `lock` | System GRITLock and one lock per RFID reader |
 | `switch` | Collector, solenoid, latch, and powerbank controls |
 | `number` | System LED brightness |
-| `button` | Refresh, locate, GRIT service restart, and disabled-by-default hub reboot |
+| `button` | Refresh and locate (service restart and hub reboot were removed in v0.2.0) |
 | `binary_sensor` | REST, internet, MQTT, physical-button, and device connectivity |
 | `sensor` | Hub information, device count, device status, RSSI, firmware, and last-received diagnostics |
 

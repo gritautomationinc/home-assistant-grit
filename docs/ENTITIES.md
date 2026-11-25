@@ -142,10 +142,12 @@ than an assumed state.
 | Entity | Category | Behavior and limitations |
 | --- | --- | --- |
 | Refresh All | Configuration | Requests an immediate coordinator refresh; no device command |
-| Restart GRIT Service | Configuration | Calls the bounded GRIT service restart route |
-| Reboot Hub | Configuration; disabled by default | Reboots the physical hub; enable and use only with explicit site authorization |
 | Device Refresh | Configuration, per device | Calls the bounded device refresh route, then refreshes coordinator state |
 | Device Locate | Configuration, per device | Calls the bounded locate route and may cause physical device activity |
+
+Restart GRIT Service and Reboot Hub buttons were removed in v0.2.0. Those Hub
+routes require a human admin session and always return 403 for API tokens. On
+upgrade, their entity registry entries are deleted during setup.
 
 ## Binary sensors
 

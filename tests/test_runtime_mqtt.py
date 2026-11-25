@@ -259,6 +259,23 @@ def _install_stubs(package_name: str) -> None:
     config_entries = types.ModuleType("homeassistant.config_entries")
     core = types.ModuleType("homeassistant.core")
     exceptions = types.ModuleType("homeassistant.exceptions")
+    helpers = types.ModuleType("homeassistant.helpers")
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+
+    class _EmptyRegistry:
+        def async_remove(self, _entity_id: str) -> None:
+            return None
+
+    def _async_get(_hass: Any) -> _EmptyRegistry:
+        return _EmptyRegistry()
+
+    def _async_entries_for_config_entry(_registry: Any, _entry_id: str) -> list:
+        return []
+
+    entity_registry.async_get = _async_get
+    entity_registry.async_entries_for_config_entry = (
+        _async_entries_for_config_entry
+    )
     config_entries.ConfigEntry = object
     core.HomeAssistant = object
     core.ServiceCall = object
@@ -268,10 +285,14 @@ def _install_stubs(package_name: str) -> None:
     homeassistant.config_entries = config_entries
     homeassistant.core = core
     homeassistant.exceptions = exceptions
+    homeassistant.helpers = helpers
+    helpers.entity_registry = entity_registry
     sys.modules["homeassistant"] = homeassistant
     sys.modules["homeassistant.config_entries"] = config_entries
     sys.modules["homeassistant.core"] = core
     sys.modules["homeassistant.exceptions"] = exceptions
+    sys.modules["homeassistant.helpers"] = helpers
+    sys.modules["homeassistant.helpers.entity_registry"] = entity_registry
 
     package = types.ModuleType(package_name)
     package.__path__ = [str(COMPONENT_ROOT)]

@@ -321,12 +321,6 @@ class FakeApi:
     ) -> None:
         self.hub_calls.append(("set_led", hub_id, brightness))
 
-    async def restart_service(self) -> None:
-        self.hub_calls.append(("restart_service",))
-
-    async def reboot_hub(self) -> None:
-        self.hub_calls.append(("reboot_hub",))
-
 
 class FakeCoordinator:
     def __init__(self, devices: dict[str, list[dict[str, Any]]]) -> None:
@@ -1926,21 +1920,15 @@ class EntityMqttTests(unittest.TestCase):
             self.coordinator.api.hub_calls, before + [("set_gritlock", True)]
         )
 
-    def test_restart_and_reboot_buttons_use_only_explicit_fake_methods(self):
-        restart = BUTTON_MODULE.GritHubRestartServiceButton(
-            self.coordinator
-        )
-        reboot = BUTTON_MODULE.GritHubRebootHubButton(self.coordinator)
-        self.assertFalse(reboot._attr_entity_registry_enabled_default)
-
-        self.loop.run_until_complete(restart.async_press())
-        self.loop.run_until_complete(reboot.async_press())
-
-        self.assertEqual(
-            self.coordinator.api.hub_calls,
-            [("restart_service",), ("reboot_hub",)],
-        )
-        self.assertEqual(self.coordinator.refresh_calls, 0)
+    def test_restart_and_reboot_button_classes_are_removed(self):
+        self.assertFalse(hasattr(BUTTON_MODULE, "GritHubRestartServiceButton"))
+        self.assertFalse(hasattr(BUTTON_MODULE, "GritHubRebootHubButton"))
+        source = (COMPONENT_ROOT / "button.py").read_text(encoding="utf-8")
+        self.assertNotIn("grit_hub_restart_service", source)
+        self.assertNotIn("grit_hub_reboot", source)
+        api_source = (COMPONENT_ROOT / "api.py").read_text(encoding="utf-8")
+        self.assertNotIn("async def restart_service", api_source)
+        self.assertNotIn("async def reboot_hub", api_source)
 
     def test_exposed_state_and_attributes_contain_no_raw_mqtt_values(self):
         topic = "grit/private-hub/gate/private-device/status"
