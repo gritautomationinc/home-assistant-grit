@@ -315,6 +315,23 @@ class CoordinatorMqttTests(unittest.TestCase):
         })
         self.assertEqual(state, {"density10": 10})
 
+    def test_climate_temperature_and_humidity_follow_device_reports(self):
+        parse = coordinator_module._payload_state
+        self.assertEqual(
+            parse("climate", "sts", {"sts": 1, "t": 21.5, "hum": 48}),
+            {"online": True, "temperature": 21.5, "humidity": 48},
+        )
+        self.assertEqual(
+            parse("climate", "st", {"temperature": -5, "humidity": 99.5}),
+            {"temperature": -5, "humidity": 99.5},
+        )
+        self.assertNotIn(
+            "humidity", parse("climate", "st", {"hum": 120, "t": 20}) or {}
+        )
+        self.assertNotIn(
+            "temperature", parse("climate", "cfg", {"t": 20}) or {}
+        )
+
     def setUp(self):
         connect_patch = mock.patch.object(
             socket.socket,

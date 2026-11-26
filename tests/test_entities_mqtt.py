@@ -685,6 +685,10 @@ class EntityMqttTests(unittest.TestCase):
             "id": "pressure-test", "name": "Pressure Test",
             MQTT_STATE_KEY: {"pressure": 51.2, "temperature": 21.5, "online": True},
         }]
+        devices["climate"] = [{
+            "id": "climate-test", "name": "Temp/Humidity Test",
+            MQTT_STATE_KEY: {"temperature": 23.5, "humidity": 46, "online": True},
+        }]
         coordinator = FakeCoordinator(devices)
         hass = FakeHass(coordinator)
         sensors = self.run_setup(SENSOR_MODULE, hass, self.entry)
@@ -693,6 +697,8 @@ class EntityMqttTests(unittest.TestCase):
         self.assertEqual(values[("airquality", "density25")], 12.5)
         self.assertEqual(values[("pressure", "pressure")], 51.2)
         self.assertEqual(values[("pressure", "temperature")], 21.5)
+        self.assertEqual(values[("climate", "temperature")], 23.5)
+        self.assertEqual(values[("climate", "humidity")], 46)
         self.assertIsNone(values[("airquality", "density4")])
         switches = self.run_setup(SWITCH_MODULE, hass, self.entry)
         air_filter = next(entity for entity in switches if isinstance(entity, SWITCH_MODULE.GritHubAirFilterSwitch))

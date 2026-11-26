@@ -27,6 +27,10 @@ ENVIRONMENTAL_SENSORS = {
         ("pressure", "Pressure", "mbar", SensorDeviceClass.PRESSURE),
         ("temperature", "Temperature", "°C", SensorDeviceClass.TEMPERATURE),
     ),
+    "climate": (
+        ("temperature", "Temperature", "°C", SensorDeviceClass.TEMPERATURE),
+        ("humidity", "Humidity", "%", SensorDeviceClass.HUMIDITY),
+    ),
 }
 
 

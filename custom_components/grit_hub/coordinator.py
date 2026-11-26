@@ -553,6 +553,12 @@ def _payload_state(
             value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
             if value is not _INVALID:
                 updates[key] = value
+    elif device_type == "climate" and root_message_type in {"sts", "st"}:
+        for key, compact in (("temperature", "t"), ("humidity", "hum")):
+            raw = payload.get(key, payload.get(compact))
+            value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
+            if value is not _INVALID:
+                updates[key] = value
 
     online = _first_valid(
         payload,

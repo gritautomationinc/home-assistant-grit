@@ -180,13 +180,15 @@ All are diagnostic entities:
 
 Hub diagnostic sensors are **Status**, **Device Count**, **Hub IP Address**,
 **Hub Software Version**, and **Software Branch**. Generic status sensors may be
-created for air-quality, presence, pressure, dustbin, magswipe, scanner,
+created for air-quality, Temp/Humidity Sensors, presence, pressure, dustbin, magswipe, scanner,
 trigger, and extender devices.
 
 Air-quality devices also expose measurement sensors for PM1, PM2.5, PM4, PM10
 (µg/m³), temperature (°C), humidity (%), carbon dioxide (ppm), VOC index, and
 NOx index when their firmware reports those readings on MQTT `q`. Pressure
 devices expose pressure (mbar) and temperature (°C) from MQTT `pt` or `st`.
+Temp/Humidity Sensors expose temperature (°C) and humidity (%) from their
+device MQTT `sts` or `st` reports.
 These numeric sensors use Home Assistant's measurement state class, so the
 recorder can graph them from the time observations begin. Unsupported or
 unreported readings remain unavailable; Hub historical readings are not

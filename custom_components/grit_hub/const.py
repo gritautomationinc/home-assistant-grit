@@ -56,6 +56,7 @@ DEVICE_TYPES = [
     "powerbank",
     "gate",
     "airquality",
+    "climate",
     "dustbin",
     "magswipe",
     "presence",
@@ -67,7 +68,7 @@ DEVICE_TYPES = [
 
 SWITCH_DEVICE_TYPES = ["solenoid", "latch", "collector", "powerbank"]
 COVER_DEVICE_TYPES = ["gate"]
-SENSOR_DEVICE_TYPES = ["airquality", "presence", "pressure", "dustbin", "magswipe", "scanner", "trigger", "xtndr"]
+SENSOR_DEVICE_TYPES = ["airquality", "climate", "presence", "pressure", "dustbin", "magswipe", "scanner", "trigger", "xtndr"]
 
 # remoteType values accepted by grit_hub.device_command for v0.2.0.
 # Expand only with evidence from a verified Hub tag (Held for Joel if more needed).

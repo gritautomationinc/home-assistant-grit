@@ -36,6 +36,7 @@ _ALLOWED_DEVICE_TYPES = frozenset(
         "powerbank",
         "gate",
         "airquality",
+        "climate",
         "dustbin",
         "magswipe",
         "presence",

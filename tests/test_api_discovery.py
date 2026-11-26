@@ -63,6 +63,23 @@ API = _load_api()
 
 
 class ApiHubTests(unittest.TestCase):
+    def test_climate_collection_discovers_temp_humidity_sensors(self):
+        client = self.client()
+        calls = []
+
+        async def request(method, path, **_kwargs):
+            calls.append((method, path))
+            return [{
+                "id": "climate-test", "displayName": "Shop Climate",
+                "temperature": 22.5, "humidity": 45,
+                "privateField": "discarded",
+            }]
+
+        client.request = request
+        result = asyncio.run(client.get_collection("climate"))
+        self.assertEqual(calls, [("GET", "/api/climate")])
+        self.assertEqual(result, [{"id": "climate-test", "displayName": "Shop Climate"}])
+
     def test_air_filter_uses_timed_manual_override(self):
         client = self.client()
         calls = []

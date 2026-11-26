@@ -32,6 +32,7 @@ See the [installation guide](docs/INSTALLATION.md) for manual installation, conf
 | Triggers | Status and MQTT online, signal, firmware, and last-received diagnostics where reported |
 | Air quality | Graphable PM1, PM2.5, PM4, PM10, temperature, humidity, CO₂, VOC index, and NOx index readings where reported; timed manual air-filter switch on controllable units |
 | Pressure | Graphable pressure and temperature readings |
+| Temp/Humidity Sensors | Graphable temperature and humidity readings |
 | Dustbin and presence | Status and per-device MQTT diagnostics where reported |
 | Magswipe, scanner, and extender devices | Status and basic MQTT diagnostics where reported |
 | Collectors, solenoids, latches, powerbanks | Switches |
@@ -76,7 +77,7 @@ After the exact runtime subscription is ready, the integration makes bounded aut
 
 This is an experimental custom integration. Direct MQTT is required; REST-only operation is unsupported. MQTT uses QoS 0 and has no per-device staleness timer. New devices need an integration reload, stale devices require manual removal, and multi-hub use has not been broadly validated. A Hub-level GRITLock change may fail to propagate to an individual trigger. See [Compatibility](docs/COMPATIBILITY.md) and [Architecture](docs/ARCHITECTURE.md) for the detailed boundaries.
 
-Air-quality and pressure graphs start accumulating when Home Assistant records the new measurement entities; prior Hub history is not imported. The air-filter switch uses the Hub's configured run time (30 minutes when absent) and waits for a fresh device state report.
+Air-quality, pressure, and Temp/Humidity Sensor graphs start accumulating when Home Assistant records the new measurement entities; prior Hub history is not imported. The air-filter switch uses the Hub's configured run time (30 minutes when absent) and waits for a fresh device state report.
 
 ## Privacy and security
 
