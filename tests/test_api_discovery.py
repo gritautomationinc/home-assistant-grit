@@ -63,6 +63,19 @@ API = _load_api()
 
 
 class ApiHubTests(unittest.TestCase):
+    def test_presence_collection_keeps_only_bounded_radar_configuration(self):
+        result = API.sanitize_device_data({
+            "id": "presence-test", "name": "Shop Presence",
+            "presenceBehavior": 0, "sensorMask": 1,
+            "zones": [{"x1": -500, "y1": 400, "x2": 500, "y2": 1500}],
+            "privateField": "discarded",
+        }, device_type="presence")
+        self.assertEqual(result["zones"], [{"x1": -500, "y1": 400, "x2": 500, "y2": 1500}])
+        self.assertEqual(result["presenceBehavior"], 0)
+        self.assertNotIn("privateField", result)
+        invalid = API.sanitize_device_data({"zones": [{"x1": -9000, "y1": 0, "x2": 5, "y2": 5}]}, device_type="presence")
+        self.assertNotIn("zones", invalid)
+
     def test_climate_collection_discovers_temp_humidity_sensors(self):
         client = self.client()
         calls = []

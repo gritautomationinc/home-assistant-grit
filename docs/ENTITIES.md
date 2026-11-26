@@ -175,6 +175,10 @@ All are diagnostic entities:
   available so broker loss remains visible.
 - **MQTT Online** — per-device bounded MQTT online observation, available only
   after a supported value has been observed.
+- **Presence Occupied** — occupancy-class binary sensor from the Presence
+  device's MQTT `/cov` report. Unknown stays unknown until a coverage report
+  arrives; an offline device is unavailable. Its two small attributes identify
+  the integration entry and device for the bundled Presence dashboard card.
 
 ## Sensors
 

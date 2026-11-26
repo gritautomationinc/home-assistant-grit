@@ -28,6 +28,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         dev,
                     )
                 )
+                if dev_type == "presence":
+                    entities.append(
+                        GritHubPresenceOccupiedBinarySensor(
+                            coordinator, entry.entry_id, dev
+                        )
+                    )
     async_add_entities(entities)
 
 
@@ -109,3 +115,35 @@ class GritHubDeviceMqttOnlineBinarySensor(GritHubEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         return self.mqtt_online
+
+
+class GritHubPresenceOccupiedBinarySensor(GritHubEntity, BinarySensorEntity):
+    _attr_name = "Occupied"
+    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+
+    def __init__(self, coordinator, entry_id, device):
+        super().__init__(coordinator, "presence", device)
+        self._entry_id = entry_id
+        self._attr_unique_id = (
+            f"grit_hub_{entry_id}_presence_{self._device_id}_occupied"
+        )
+
+    @property
+    def available(self) -> bool:
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.mqtt_connected
+            and self.mqtt_online is not False
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        value = self.mqtt_state.get("occupied")
+        return value if isinstance(value, bool) else None
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "entry_id": self._entry_id,
+            "device_id": str(self._device_id),
+        }

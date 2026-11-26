@@ -33,12 +33,30 @@ See the [installation guide](docs/INSTALLATION.md) for manual installation, conf
 | Air quality | Graphable PM1, PM2.5, PM4, PM10, temperature, humidity, CO₂, VOC index, and NOx index readings where reported; timed manual air-filter switch on controllable units |
 | Pressure | Graphable pressure and temperature readings |
 | Temp/Humidity Sensors | Graphable temperature and humidity readings |
-| Dustbin and presence | Status and per-device MQTT diagnostics where reported |
+| Presence | Occupied/unoccupied binary sensor, status and MQTT diagnostics; optional radar dashboard card with coverage map, zones, settings, and Presence fleet firmware updates |
+| Dustbin | Status and per-device MQTT diagnostics where reported |
 | Magswipe, scanner, and extender devices | Status and basic MQTT diagnostics where reported |
 | Collectors, solenoids, latches, powerbanks | Switches |
 | GRIT Hub | LED brightness, refresh and locate controls, connectivity and device diagnostics |
 
 The [entity reference](docs/ENTITIES.md) lists the full set and explains where each state comes from. Some controls can operate physical equipment; check the target and site conditions before using them.
+
+### Presence dashboard card
+
+The bundled card follows the GRIT app's LD2450 coverage view: live occupancy, a top-down map, four radar zones, transient target dots, and editable zones/settings. It also checks for eligible Presence firmware updates and starts the Hub's **Presence fleet** update. Firmware installation is not limited to the sensor shown on the card. Editing and update actions require a Home Assistant administrator; other signed-in users can view occupancy and the map.
+
+1. In **Settings > Dashboards**, open the top-right menu and select **Resources**. Add `/grit-presence/presence-card.js` as a **JavaScript module**.
+2. Edit a dashboard, add a **Manual card**, and enter:
+
+   ```yaml
+   type: custom:grit-presence-card
+   entity: binary_sensor.your_presence_occupied
+   ```
+
+   Replace `binary_sensor.your_presence_occupied` with the Occupied entity of a GRIT Presence sensor.
+3. Reload the dashboard. Use **Start live radar** when you need target dots; the Hub returns the sensor to normal mode when streaming ends. Draw or move zones on the map, edit coordinates in millimeters, then choose **Save zones**. Firmware status and the fleet update action appear below the map.
+
+The card is served by the integration after Home Assistant starts. It uses the Home Assistant session to call the integration's authenticated API; the GRIT API token remains on the server. It does not import past occupancy history.
 
 ## Compatibility and behavior
 
@@ -77,7 +95,7 @@ After the exact runtime subscription is ready, the integration makes bounded aut
 
 This is an experimental custom integration. Direct MQTT is required; REST-only operation is unsupported. MQTT uses QoS 0 and has no per-device staleness timer. New devices need an integration reload, stale devices require manual removal, and multi-hub use has not been broadly validated. A Hub-level GRITLock change may fail to propagate to an individual trigger. See [Compatibility](docs/COMPATIBILITY.md) and [Architecture](docs/ARCHITECTURE.md) for the detailed boundaries.
 
-Air-quality, pressure, and Temp/Humidity Sensor graphs start accumulating when Home Assistant records the new measurement entities; prior Hub history is not imported. The air-filter switch uses the Hub's configured run time (30 minutes when absent) and waits for a fresh device state report.
+Air-quality, pressure, and Temp/Humidity Sensor graphs start accumulating when Home Assistant records the new measurement entities; prior Hub history is not imported. The air-filter switch uses the Hub's configured run time (30 minutes when absent) and waits for a fresh device state report. Presence occupancy also begins recording only after live MQTT coverage is received.
 
 ## Privacy and security
 

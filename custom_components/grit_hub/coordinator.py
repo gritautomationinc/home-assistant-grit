@@ -65,6 +65,7 @@ _FIELD_CATEGORIES = {
     "state": "state",
     "locked": "state",
     "online": "online",
+    "occupied": "state",
     "rssi": "rssi",
     "firmware_version": "firmware",
     **{field: "measurement" for field in _MEASUREMENT_LIMITS},
@@ -352,7 +353,7 @@ def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
         if field not in value:
             continue
         raw = value[field]
-        if field in {"open", "state", "locked", "online"}:
+        if field in {"open", "state", "locked", "online", "occupied"}:
             converted = _strict_bool(raw)
         elif field == "position":
             converted = _bounded_number(raw, 0, 100)
@@ -559,6 +560,10 @@ def _payload_state(
             value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
             if value is not _INVALID:
                 updates[key] = value
+    elif device_type == "presence" and root_message_type == "cov":
+        occupied = _strict_binary_bool(payload.get("occupied"))
+        if occupied is not _INVALID:
+            updates["occupied"] = occupied
 
     online = _first_valid(
         payload,

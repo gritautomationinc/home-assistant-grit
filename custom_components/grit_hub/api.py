@@ -455,6 +455,37 @@ def sanitize_device_data(
         ):
             sanitized["overrideOnTimer"] = minutes
 
+    if device_type == "presence":
+        version = _bounded_device_text(value.get("version"))
+        if version is not None:
+            sanitized["version"] = version
+        behavior = value.get("presenceBehavior")
+        if type(behavior) is int and behavior in (0, 1, 2):
+            sanitized["presenceBehavior"] = behavior
+        mask = value.get("sensorMask")
+        if type(mask) is int and 0 <= mask <= 255:
+            sanitized["sensorMask"] = mask
+        for field in ("triggerOnDebounceMs", "triggerOffDebounceMs"):
+            delay = value.get(field)
+            if type(delay) is int and 0 <= delay <= 600_000:
+                sanitized[field] = delay
+        zones = value.get("zones")
+        if isinstance(zones, list) and len(zones) <= 4:
+            clean_zones = []
+            for zone in zones:
+                if not isinstance(zone, dict):
+                    break
+                coords = {key: zone.get(key) for key in ("x1", "y1", "x2", "y2")}
+                if not all(
+                    type(number) is int
+                    and (0 <= number <= 6000 if key.startswith("y") else -3000 <= number <= 3000)
+                    for key, number in coords.items()
+                ):
+                    break
+                clean_zones.append(coords)
+            else:
+                sanitized["zones"] = clean_zones
+
     return sanitized
 
 

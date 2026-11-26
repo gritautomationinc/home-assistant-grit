@@ -282,6 +282,13 @@ def _device_map():
 
 
 class CoordinatorMqttTests(unittest.TestCase):
+    def test_presence_occupancy_comes_only_from_coverage_report(self):
+        parse = coordinator_module._payload_state
+        self.assertEqual(parse("presence", "cov", {"occupied": 1}), {"occupied": True})
+        self.assertEqual(parse("presence", "cov", {"occupied": 0}), {"occupied": False})
+        self.assertIsNone(parse("presence", "cov", {"occupied": 2}))
+        self.assertIsNone(parse("presence", "s", {"occupied": 1}))
+
     def test_environmental_measurements_follow_device_topics(self):
         parse = coordinator_module._payload_state
         air = parse("airquality", "q", {

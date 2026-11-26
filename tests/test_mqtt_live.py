@@ -197,6 +197,13 @@ class FakeClientFactory:
 
 
 class GritLiveMqttTests(unittest.TestCase):
+    def test_presence_radar_frames_are_bounded_before_callback(self):
+        sanitize = MQTT_MODULE.GritLiveMqtt._sanitize_payload
+        self.assertEqual(sanitize({"tgts": [{"x": -500, "y": 1200, "v": 15, "r": 80}], "private": "discard"}),
+                         {"tgts": [{"x": -500, "y": 1200, "v": 15, "r": 80}]})
+        self.assertNotIn("tgts", sanitize({"tgts": [{"x": float("nan"), "y": 0, "v": 0, "r": 0}]}))
+        self.assertNotIn("tgts", sanitize({"tgts": [{}] * 4}))
+
     def test_environmental_payload_keeps_bounded_compact_readings(self):
         self.assertIn("climate", MQTT_MODULE._ALLOWED_DEVICE_TYPES)
         sanitize = MQTT_MODULE.GritLiveMqtt._sanitize_payload

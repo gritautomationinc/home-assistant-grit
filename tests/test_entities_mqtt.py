@@ -90,6 +90,7 @@ class BinarySensorEntity:
 
 class BinarySensorDeviceClass:
     CONNECTIVITY = "connectivity"
+    OCCUPANCY = "occupancy"
 
 
 class ButtonEntity:
@@ -1815,6 +1816,20 @@ class EntityMqttTests(unittest.TestCase):
         self.gate[MQTT_STATE_KEY]["online"] = True
         self.assertTrue(sensor.is_on)
         self.assertTrue(sensor._attr_unique_id.endswith("_mqtt_online"))
+
+    def test_presence_occupancy_entity_uses_mqtt_coverage(self):
+        device = {"id": "presence-test", "zones": [{"x1": 0, "y1": 0, "x2": 500, "y2": 500}]}
+        self.coordinator.data["devices"]["presence"] = [device]
+        sensor = BINARY_SENSOR_MODULE.GritHubPresenceOccupiedBinarySensor(self.coordinator, ENTRY_ID, device)
+        self.assertIsNone(sensor.is_on)
+        device[MQTT_STATE_KEY] = {"occupied": True, "online": True}
+        self.assertTrue(sensor.is_on)
+        self.assertEqual(sensor.extra_state_attributes, {"entry_id": ENTRY_ID, "device_id": "presence-test"})
+        device[MQTT_STATE_KEY]["online"] = False
+        self.assertFalse(sensor.available)
+        device[MQTT_STATE_KEY]["online"] = True
+        self.coordinator.mqtt_connected = False
+        self.assertFalse(sensor.available)
 
     def test_rssi_firmware_and_timestamp_diagnostics(self):
         received_at = datetime(2026, 8, 3, 1, 2, 3, tzinfo=timezone.utc)

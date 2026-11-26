@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import time
 from typing import Any, Mapping, NoReturn
 
 import voluptuous as vol
@@ -102,6 +103,8 @@ class GritHubRuntimeData:
     unloading: bool = False
     mqtt_stopped: bool = False
     ready_future: asyncio.Future[bool] | None = None
+    hub_id: str = ""
+    presence_frames: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _invalid_mqtt_config() -> ConfigEntryError:
@@ -303,6 +306,22 @@ def _apply_mqtt_message(
         or not runtime.coordinator.mqtt_connected
     ):
         return
+    if device_type == "presence" and message_type in {"rt", "ze"}:
+        if hub_id != runtime.hub_id or not any(
+            isinstance(device, dict) and str(device.get("id")) == device_id
+            for device in runtime.coordinator.data.get("devices", {}).get("presence", [])
+        ):
+            return
+        frame = runtime.presence_frames.setdefault(device_id, {})
+        if message_type == "rt" and isinstance(payload.get("tgts"), list):
+            frame["targets"] = payload["tgts"]
+            frame["target_at"] = time.monotonic()
+        elif message_type == "ze":
+            zone_id = payload.get("zid")
+            occupied = payload.get("zoc")
+            if zone_id in {"z1", "z2", "z3", "z4"} and occupied in (0, 1, False, True):
+                frame.setdefault("zones", {})[zone_id] = bool(occupied)
+        return
     runtime.coordinator.handle_mqtt_message(
         hub_id,
         device_type,
@@ -310,6 +329,8 @@ def _apply_mqtt_message(
         message_type,
         payload,
     )
+    if device_type == "presence" and message_type == "cov" and payload.get("occupied") in (0, False):
+        runtime.presence_frames.setdefault(device_id, {}).pop("zones", None)
 
 
 def _apply_mqtt_connection_state(
@@ -319,6 +340,8 @@ def _apply_mqtt_connection_state(
     """Apply a scheduled broker state and complete initial readiness."""
     if not runtime.active or runtime.unloading:
         return
+    if not connected:
+        runtime.presence_frames.clear()
     changed = runtime.coordinator.set_mqtt_connected(connected)
     if connected and changed:
         runtime.coordinator.start_state_reconciliation()
@@ -495,6 +518,7 @@ async def async_setup_entry(
         coordinator=coordinator,
         mqtt=mqtt,
         ready_future=hass.loop.create_future(),
+        hub_id=settings.hub_id,
     )
 
     try:
@@ -535,7 +559,8 @@ async def async_setup_entry(
     try:
         entry.runtime_data = runtime
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-            "coordinator": coordinator
+            "coordinator": coordinator,
+            "runtime": runtime,
         }
         _remove_retired_button_entities(hass, entry)
         _async_update_repair_issues(
@@ -549,6 +574,8 @@ async def async_setup_entry(
             entry,
             PLATFORMS,
         )
+        from .presence_ui import async_register_presence_ui
+        await async_register_presence_ui(hass)
         _register_services(hass)
     except asyncio.CancelledError:
         try:
