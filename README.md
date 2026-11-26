@@ -29,6 +29,8 @@ See the [installation guide](docs/INSTALLATION.md) for manual installation, conf
 | Gates | Covers with position and open/closed state |
 | RFiD readers | Individual lock entities |
 | GRITLock | One system-wide lock entity |
+| Triggers | Status and MQTT online, signal, firmware, and last-received diagnostics where reported |
+| Air-quality, dustbin, pressure, presence, magswipe, scanner, and extender devices | Status and per-device MQTT diagnostics where reported |
 | Collectors, solenoids, latches, powerbanks | Switches |
 | GRIT Hub | LED brightness, refresh and locate controls, connectivity and device diagnostics |
 
