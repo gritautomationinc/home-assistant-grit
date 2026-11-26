@@ -22,6 +22,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for dev in coordinator.data.get("devices", {}).get(dev_type, []):
             if obj_id(dev) is not None:
                 entities.append(GritHubDeviceSwitch(coordinator, dev_type, dev))
+    for dev in coordinator.data.get("devices", {}).get("airquality", []):
+        version = dev.get("version")
+        sensor_only = isinstance(version, str) and version.startswith(
+            ("4.1.", "5.1.")
+        )
+        if (
+            obj_id(dev) is not None
+            and not sensor_only
+            and dev.get("controlType") in {"inline", "ir", "rf"}
+        ):
+            entities.append(GritHubAirFilterSwitch(coordinator, dev))
     async_add_entities(entities)
 
 
@@ -118,3 +129,48 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
             ) from err
         if not confirmed:
             raise HomeAssistantError("Device state could not be confirmed")
+
+
+class GritHubAirFilterSwitch(GritHubEntity, SwitchEntity):
+    _attr_name = "Air Filter"
+    _attr_icon = "mdi:air-filter"
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator, "airquality", device)
+        self._attr_unique_id = f"grit_hub_airquality_{self._device_id}_filter"
+
+    @property
+    def available(self):
+        return self.live_available
+
+    @property
+    def is_on(self):
+        state = self.mqtt_state.get("state")
+        return state if isinstance(state, bool) else None
+
+    async def async_turn_on(self, **kwargs):
+        await self._async_set_state(True)
+
+    async def async_turn_off(self, **kwargs):
+        await self._async_set_state(False)
+
+    async def _async_set_state(self, state):
+        minutes = self.current_device.get("overrideOnTimer", 30)
+        if not self.coordinator.mqtt_connected:
+            raise HomeAssistantError("Air filter state could not be confirmed")
+        boundary = self.coordinator.mqtt_receive_sequence
+        try:
+            await self.coordinator.api.set_air_filter(self._device_id, state, minutes)
+            confirmed = await self.coordinator.async_confirm_device_state(
+                "airquality",
+                self._device_id,
+                state,
+                after_sequence=boundary,
+                timeout=DEVICE_CONFIRM_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            raise HomeAssistantError("Air filter state could not be confirmed") from err
+        if not confirmed:
+            raise HomeAssistantError("Air filter state could not be confirmed")

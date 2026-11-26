@@ -70,6 +70,18 @@ class SensorEntity:
 class SensorDeviceClass:
     SIGNAL_STRENGTH = "signal_strength"
     TIMESTAMP = "timestamp"
+    TEMPERATURE = "temperature"
+    HUMIDITY = "humidity"
+    CO2 = "carbon_dioxide"
+    PRESSURE = "pressure"
+    PM1 = "pm1"
+    PM25 = "pm25"
+    PM4 = "pm4"
+    PM10 = "pm10"
+
+
+class SensorStateClass:
+    MEASUREMENT = "measurement"
 
 
 class BinarySensorEntity:
@@ -190,6 +202,7 @@ def _install_home_assistant_stubs() -> None:
     sensor = types.ModuleType("homeassistant.components.sensor")
     sensor.SensorEntity = SensorEntity
     sensor.SensorDeviceClass = SensorDeviceClass
+    sensor.SensorStateClass = SensorStateClass
     binary_sensor = types.ModuleType("homeassistant.components.binary_sensor")
     binary_sensor.BinarySensorEntity = BinarySensorEntity
     binary_sensor.BinarySensorDeviceClass = BinarySensorDeviceClass
@@ -661,6 +674,49 @@ class FakeEntry:
 
 
 class EntityMqttTests(unittest.TestCase):
+    def test_environmental_entities_show_live_readings_and_filter_state(self):
+        devices = {kind: [] for kind in CONST_MODULE.DEVICE_TYPES}
+        devices["airquality"] = [{
+            "id": "air-test", "name": "Air Test", "controlType": "inline",
+            "overrideOnTimer": 45,
+            MQTT_STATE_KEY: {"density25": 12.5, "state": True, "online": True},
+        }]
+        devices["pressure"] = [{
+            "id": "pressure-test", "name": "Pressure Test",
+            MQTT_STATE_KEY: {"pressure": 51.2, "temperature": 21.5, "online": True},
+        }]
+        coordinator = FakeCoordinator(devices)
+        hass = FakeHass(coordinator)
+        sensors = self.run_setup(SENSOR_MODULE, hass, self.entry)
+        measurements = [entity for entity in sensors if isinstance(entity, SENSOR_MODULE.GritHubMeasurementSensor)]
+        values = {(entity.device_type, entity._field): entity.native_value for entity in measurements}
+        self.assertEqual(values[("airquality", "density25")], 12.5)
+        self.assertEqual(values[("pressure", "pressure")], 51.2)
+        self.assertEqual(values[("pressure", "temperature")], 21.5)
+        self.assertIsNone(values[("airquality", "density4")])
+        switches = self.run_setup(SWITCH_MODULE, hass, self.entry)
+        air_filter = next(entity for entity in switches if isinstance(entity, SWITCH_MODULE.GritHubAirFilterSwitch))
+        self.assertTrue(air_filter.is_on)
+        devices["airquality"].append({"id": "airguard-test", "version": "4.1.0", "controlType": "inline"})
+        switches = self.run_setup(SWITCH_MODULE, hass, self.entry)
+        self.assertEqual(sum(isinstance(entity, SWITCH_MODULE.GritHubAirFilterSwitch) for entity in switches), 1)
+
+    def test_air_filter_command_uses_configured_timer_and_fresh_state(self):
+        device = {"id": "air-test", "controlType": "inline", "overrideOnTimer": 45}
+        self.coordinator.data["devices"]["airquality"] = [device]
+        filter_switch = SWITCH_MODULE.GritHubAirFilterSwitch(self.coordinator, device)
+        calls = []
+
+        async def set_air_filter(device_id, on, minutes):
+            calls.append((device_id, on, minutes))
+
+        self.coordinator.api.set_air_filter = set_air_filter
+        self.coordinator.confirmation_hook = lambda *_args: True
+        self.loop.run_until_complete(filter_switch.async_turn_on())
+        self.assertEqual(calls, [("air-test", True, 45)])
+        self.assertEqual(self.coordinator.confirmation_calls[0][:4], ("airquality", "air-test", True, 0))
+
+
     def setUp(self) -> None:
         self.loop = asyncio.new_event_loop()
         self.addCleanup(self.loop.close)

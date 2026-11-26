@@ -75,6 +75,20 @@ _ALLOWED_MQTT_PAYLOAD_KEYS = frozenset(
         "source_timestamp",
         "timestamp",
         "ts",
+        "particulateMatter",
+        "pm",
+        "carbonDioxide",
+        "co2",
+        "temperature",
+        "t",
+        "humidity",
+        "hum",
+        "volatileOrganic",
+        "voc",
+        "nitrogenOxide",
+        "nox",
+        "pressure",
+        "pr",
     }
 )
 
@@ -415,6 +429,21 @@ class GritLiveMqtt:
             value = payload[key]
             if isinstance(value, bool) or isinstance(value, int):
                 sanitized[key] = value
+            elif (
+                key in {"particulateMatter", "pm"}
+                and isinstance(value, list)
+                and len(value) in {3, 4}
+            ):
+                if all(
+                    item is None
+                    or (
+                        isinstance(item, (int, float))
+                        and not isinstance(item, bool)
+                        and 0 <= item <= 1_000_000
+                    )
+                    for item in value
+                ):
+                    sanitized[key] = list(value)
             elif isinstance(value, float) and math.isfinite(value):
                 sanitized[key] = value
             elif (

@@ -197,6 +197,12 @@ class FakeClientFactory:
 
 
 class GritLiveMqttTests(unittest.TestCase):
+    def test_environmental_payload_keeps_bounded_compact_readings(self):
+        sanitize = MQTT_MODULE.GritLiveMqtt._sanitize_payload
+        self.assertEqual(sanitize({"pm": [1, 2, None, 10], "co2": 750, "t": 22.5, "hum": 43, "private": "discard"}),
+                         {"pm": [1, 2, None, 10], "co2": 750, "t": 22.5, "hum": 43})
+        self.assertNotIn("pm", sanitize({"pm": list(range(100))}))
+
     """Exercise the MQTT client without Paho, sockets, or Home Assistant."""
 
     def _paho_patch(self, factory: FakeClientFactory) -> mock._patch[Any]:

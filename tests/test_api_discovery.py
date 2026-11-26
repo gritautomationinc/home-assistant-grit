@@ -63,6 +63,23 @@ API = _load_api()
 
 
 class ApiHubTests(unittest.TestCase):
+    def test_air_filter_uses_timed_manual_override(self):
+        client = self.client()
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+
+        client.request = request
+        asyncio.run(client.set_air_filter("air-test", True, 45))
+        asyncio.run(client.set_air_filter("air-test", False, 45))
+        self.assertEqual(calls, [
+            ("POST", "/api/airquality/air-test/override/true", {"json": {"manual": True, "minutes": 45}}),
+            ("POST", "/api/airquality/air-test/override/false", {"json": {"manual": True}}),
+        ])
+        with self.assertRaises(API.GritHubValidationError):
+            asyncio.run(client.set_air_filter("air-test", True, 0))
+
     def client(self):
         return API.GritHubApiClient(
             object(),

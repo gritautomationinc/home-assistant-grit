@@ -16,6 +16,7 @@ Forwarded platforms are `sensor`, `binary_sensor`, `switch`, `cover`, `button`,
 | GRITLock | `lock` | Latest immutable observation from REST seed, startup status, device status, settled live `/gl-d`, or disagreement | Matching fresh settled `live_gl_d` observation newer than the pre-command connection/sequence boundary |
 | Collector | `switch` | Individual collector detail, with proven MQTT supplementation | Newer online, settled matching individual REST detail |
 | Solenoid, latch, powerbank | `switch` | Existing collection/reconciliation implementation | Bounded full coordinator refresh; no collector contract is claimed |
+| Air filter on controllable air-quality units | `switch` | Device `st` or `sts` state | Newer matching MQTT state observation after the manual override command |
 | System LED brightness | `number` | Sanitized hub REST field | Newer full hub refresh with matching value |
 
 Unknown or incomplete authoritative evidence remains Unknown. HTTP success alone
@@ -181,6 +182,22 @@ Hub diagnostic sensors are **Status**, **Device Count**, **Hub IP Address**,
 **Hub Software Version**, and **Software Branch**. Generic status sensors may be
 created for air-quality, presence, pressure, dustbin, magswipe, scanner,
 trigger, and extender devices.
+
+Air-quality devices also expose measurement sensors for PM1, PM2.5, PM4, PM10
+(µg/m³), temperature (°C), humidity (%), carbon dioxide (ppm), VOC index, and
+NOx index when their firmware reports those readings on MQTT `q`. Pressure
+devices expose pressure (mbar) and temperature (°C) from MQTT `pt` or `st`.
+These numeric sensors use Home Assistant's measurement state class, so the
+recorder can graph them from the time observations begin. Unsupported or
+unreported readings remain unavailable; Hub historical readings are not
+imported.
+
+Controllable air-quality devices with a supported control type receive an **Air Filter**
+switch. Turning it on requests a timed manual override using the Hub's
+configured `overrideOnTimer` value, or 30 minutes if absent. Turning it off
+requests manual off. A fresh device `st` or `sts` state report confirms either
+command; HTTP success alone does not change the displayed switch state.
+Sensor-only AirGuard 4.1 and 5.1 units have no filter switch.
 
 Every uniquely discovered device may also receive these diagnostics when a
 supported value exists:
