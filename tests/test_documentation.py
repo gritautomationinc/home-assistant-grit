@@ -131,16 +131,17 @@ class DocumentationTests(unittest.TestCase):
             ROOT / "docs/RELEASE_CHECKLIST_v0.1.2.md"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["version"], "0.3.0")
         self.assertEqual(manifest["iot_class"], "local_push")
         self.assertEqual(manifest["requirements"], ["paho-mqtt>=2.1.0,<3"])
         self.assertIn(
-            "`v0.2.0` is the current release",
+            "`v0.3.0` is the current release",
             readme_flat,
         )
-        self.assertIn("releases/tag/v0.2.0", readme)
+        self.assertIn("releases/tag/v0.3.0", readme)
         self.assertIn("remains a HACS Custom Repository", readme_flat)
 
+        self.assertIn("## 0.3.0 — 2026-11-27", changelog)
         self.assertIn("## 0.2.0 — 2026-11-25", changelog)
         self.assertIn("## 0.1.2 — 2026-08-06", changelog)
         self.assertNotIn("## Unreleased", changelog)
