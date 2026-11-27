@@ -46,15 +46,29 @@ _MAX_IDENTIFIER_LENGTH = 128
 _MAX_MESSAGE_TYPE_LENGTH = 128
 _MAX_FIRMWARE_LENGTH = 128
 _MAX_SOURCE_SEQUENCE = (1 << 63) - 1
-_ORDERING_CATEGORIES = ("gate", "state", "online", "rssi", "firmware")
+_ORDERING_CATEGORIES = ("gate", "state", "online", "rssi", "firmware", "measurement")
+_MEASUREMENT_LIMITS = {
+    "density01": (0, 1_000_000),
+    "density25": (0, 1_000_000),
+    "density4": (0, 1_000_000),
+    "density10": (0, 1_000_000),
+    "temperature": (-100, 150),
+    "humidity": (0, 100),
+    "carbonDioxide": (0, 100_000),
+    "volatileOrganic": (0, 100_000),
+    "nitrogenOxide": (0, 100_000),
+    "pressure": (-1_000, 1_000),
+}
 _FIELD_CATEGORIES = {
     "position": "gate",
     "open": "gate",
     "state": "state",
     "locked": "state",
     "online": "online",
+    "occupied": "state",
     "rssi": "rssi",
     "firmware_version": "firmware",
+    **{field: "measurement" for field in _MEASUREMENT_LIMITS},
 }
 _STATE_FIELDS = tuple(_FIELD_CATEGORIES)
 _LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
@@ -69,6 +83,7 @@ _COMMAND_STATE_FIELDS = {
     "solenoid": "state",
     "latch": "state",
     "powerbank": "state",
+    "airquality": "state",
 }
 _GATE_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _GRITLOCK_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
@@ -338,12 +353,14 @@ def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
         if field not in value:
             continue
         raw = value[field]
-        if field in {"open", "state", "locked", "online"}:
+        if field in {"open", "state", "locked", "online", "occupied"}:
             converted = _strict_bool(raw)
         elif field == "position":
             converted = _bounded_number(raw, 0, 100)
         elif field == "rssi":
             converted = _bounded_number(raw, -200, 0)
+        elif field in _MEASUREMENT_LIMITS:
+            converted = _bounded_number(raw, *_MEASUREMENT_LIMITS[field])
         else:
             converted = _firmware(raw)
         if converted is not _INVALID:
@@ -502,6 +519,51 @@ def _payload_state(
         state = _first_valid(payload, ("s", "state"), _strict_bool)
         if state is not _INVALID:
             updates["state"] = state
+
+    if device_type == "airquality":
+        if root_message_type in {"st", "sts"}:
+            state = _first_valid(payload, ("state", "s"), _strict_bool)
+            if state is not _INVALID:
+                updates["state"] = state
+        if root_message_type == "q":
+            particles = payload.get("particulateMatter", payload.get("pm"))
+            if isinstance(particles, list) and len(particles) in {3, 4}:
+                keys = (
+                    ("density01", "density25", "density10")
+                    if len(particles) == 3
+                    else ("density01", "density25", "density4", "density10")
+                )
+                for key, raw in zip(keys, particles):
+                    value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
+                    if value is not _INVALID:
+                        updates[key] = value
+            for key, compact in (
+                ("temperature", "t"),
+                ("humidity", "hum"),
+                ("carbonDioxide", "co2"),
+                ("volatileOrganic", "voc"),
+                ("nitrogenOxide", "nox"),
+            ):
+                raw = payload.get(key, payload.get(compact))
+                value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
+                if value is not _INVALID:
+                    updates[key] = value
+    elif device_type == "pressure" and root_message_type in {"pt", "st"}:
+        for key, compact in (("pressure", "pr"), ("temperature", "t")):
+            raw = payload.get(key, payload.get(compact))
+            value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
+            if value is not _INVALID:
+                updates[key] = value
+    elif device_type == "climate" and root_message_type in {"sts", "st"}:
+        for key, compact in (("temperature", "t"), ("humidity", "hum")):
+            raw = payload.get(key, payload.get(compact))
+            value = _bounded_number(raw, *_MEASUREMENT_LIMITS[key])
+            if value is not _INVALID:
+                updates[key] = value
+    elif device_type == "presence" and root_message_type == "cov":
+        occupied = _strict_binary_bool(payload.get("occupied"))
+        if occupied is not _INVALID:
+            updates["occupied"] = occupied
 
     online = _first_valid(
         payload,

@@ -246,6 +246,25 @@ class GritHubApiClient:
             f"/api/{quote(normalized_type, safe='')}/{quote(normalized_id, safe='')}/state/{value}",
         )
 
+    async def set_air_filter(self, device_id: str | int, on: bool, minutes: int) -> Any:
+        """Use the Hub's timed manual air-filter override."""
+        normalized_id = _normalize_path_component(device_id, label="Device identifier")
+        if (
+            not isinstance(on, bool)
+            or isinstance(minutes, bool)
+            or not isinstance(minutes, int)
+            or not 1 <= minutes <= 1440
+        ):
+            raise GritHubValidationError("Air filter run time is invalid")
+        body = {"manual": True}
+        if on:
+            body["minutes"] = minutes
+        return await self.request(
+            "POST",
+            f"/api/airquality/{quote(normalized_id, safe='')}/override/{str(on).lower()}",
+            json=body,
+        )
+
     async def call_command(
         self,
         device_type: str,
@@ -420,6 +439,52 @@ def sanitize_device_data(
         raw = value.get(field)
         if isinstance(raw, bool):
             sanitized[field] = raw
+
+    if device_type == "airquality":
+        version = _bounded_device_text(value.get("version"))
+        if version is not None:
+            sanitized["version"] = version
+        control_type = value.get("controlType")
+        if control_type in {"inline", "ir", "rf"}:
+            sanitized["controlType"] = control_type
+        minutes = value.get("overrideOnTimer")
+        if (
+            isinstance(minutes, int)
+            and not isinstance(minutes, bool)
+            and 1 <= minutes <= 1440
+        ):
+            sanitized["overrideOnTimer"] = minutes
+
+    if device_type == "presence":
+        version = _bounded_device_text(value.get("version"))
+        if version is not None:
+            sanitized["version"] = version
+        behavior = value.get("presenceBehavior")
+        if type(behavior) is int and behavior in (0, 1, 2):
+            sanitized["presenceBehavior"] = behavior
+        mask = value.get("sensorMask")
+        if type(mask) is int and 0 <= mask <= 255:
+            sanitized["sensorMask"] = mask
+        for field in ("triggerOnDebounceMs", "triggerOffDebounceMs"):
+            delay = value.get(field)
+            if type(delay) is int and 0 <= delay <= 600_000:
+                sanitized[field] = delay
+        zones = value.get("zones")
+        if isinstance(zones, list) and len(zones) <= 4:
+            clean_zones = []
+            for zone in zones:
+                if not isinstance(zone, dict):
+                    break
+                coords = {key: zone.get(key) for key in ("x1", "y1", "x2", "y2")}
+                if not all(
+                    type(number) is int
+                    and (0 <= number <= 6000 if key.startswith("y") else -3000 <= number <= 3000)
+                    for key, number in coords.items()
+                ):
+                    break
+                clean_zones.append(coords)
+            else:
+                sanitized["zones"] = clean_zones
 
     return sanitized
 

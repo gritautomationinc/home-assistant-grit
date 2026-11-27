@@ -356,6 +356,12 @@ def _install_stubs(package_name: str) -> None:
     mqtt_module.GritLiveMqtt = FakeMqtt
     sys.modules[mqtt_module.__name__] = mqtt_module
 
+    presence_ui_module = types.ModuleType(f"{package_name}.presence_ui")
+    async def _register_presence_ui(_hass):
+        return None
+    presence_ui_module.async_register_presence_ui = _register_presence_ui
+    sys.modules[presence_ui_module.__name__] = presence_ui_module
+
 
 def _load_runtime_module() -> types.ModuleType:
     package_name = "_grit_runtime_tests"
@@ -528,6 +534,19 @@ def valid_entry_data() -> dict[str, Any]:
 
 class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
     """Exercise setup, callbacks, readiness, and unload without network I/O."""
+
+    async def test_presence_radar_frames_remain_transient_and_device_scoped(self) -> None:
+        entry = await self.setup_entry()
+        runtime = entry.runtime_data
+        runtime.coordinator.data["devices"]["presence"] = [{"id": "presence-fabricated"}]
+        target = {"x": 100, "y": 900, "v": 0, "r": 50}
+        RUNTIME_MODULE._apply_mqtt_message(runtime, FABRICATED_MQTT_HUB, "presence", "presence-fabricated", "rt", {"tgts": [target]})
+        self.assertEqual(runtime.presence_frames["presence-fabricated"]["targets"], [target])
+        self.assertEqual(runtime.coordinator.messages, [])
+        RUNTIME_MODULE._apply_mqtt_message(runtime, FABRICATED_MQTT_HUB, "presence", "unknown", "rt", {"tgts": [target]})
+        self.assertNotIn("unknown", runtime.presence_frames)
+        RUNTIME_MODULE._apply_mqtt_connection_state(runtime, False)
+        self.assertEqual(runtime.presence_frames, {})
 
     def setUp(self) -> None:
         connect_patch = mock.patch.object(

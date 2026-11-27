@@ -63,6 +63,53 @@ API = _load_api()
 
 
 class ApiHubTests(unittest.TestCase):
+    def test_presence_collection_keeps_only_bounded_radar_configuration(self):
+        result = API.sanitize_device_data({
+            "id": "presence-test", "name": "Shop Presence",
+            "presenceBehavior": 0, "sensorMask": 1,
+            "zones": [{"x1": -500, "y1": 400, "x2": 500, "y2": 1500}],
+            "privateField": "discarded",
+        }, device_type="presence")
+        self.assertEqual(result["zones"], [{"x1": -500, "y1": 400, "x2": 500, "y2": 1500}])
+        self.assertEqual(result["presenceBehavior"], 0)
+        self.assertNotIn("privateField", result)
+        invalid = API.sanitize_device_data({"zones": [{"x1": -9000, "y1": 0, "x2": 5, "y2": 5}]}, device_type="presence")
+        self.assertNotIn("zones", invalid)
+
+    def test_climate_collection_discovers_temp_humidity_sensors(self):
+        client = self.client()
+        calls = []
+
+        async def request(method, path, **_kwargs):
+            calls.append((method, path))
+            return [{
+                "id": "climate-test", "displayName": "Shop Climate",
+                "temperature": 22.5, "humidity": 45,
+                "privateField": "discarded",
+            }]
+
+        client.request = request
+        result = asyncio.run(client.get_collection("climate"))
+        self.assertEqual(calls, [("GET", "/api/climate")])
+        self.assertEqual(result, [{"id": "climate-test", "displayName": "Shop Climate"}])
+
+    def test_air_filter_uses_timed_manual_override(self):
+        client = self.client()
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+
+        client.request = request
+        asyncio.run(client.set_air_filter("air-test", True, 45))
+        asyncio.run(client.set_air_filter("air-test", False, 45))
+        self.assertEqual(calls, [
+            ("POST", "/api/airquality/air-test/override/true", {"json": {"manual": True, "minutes": 45}}),
+            ("POST", "/api/airquality/air-test/override/false", {"json": {"manual": True}}),
+        ])
+        with self.assertRaises(API.GritHubValidationError):
+            asyncio.run(client.set_air_filter("air-test", True, 0))
+
     def client(self):
         return API.GritHubApiClient(
             object(),

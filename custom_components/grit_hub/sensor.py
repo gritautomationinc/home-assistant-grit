@@ -3,12 +3,35 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import EntityCategory
 
 from .api import obj_id
 from .const import DEVICE_TYPES, DOMAIN, SENSOR_DEVICE_TYPES
 from .entity import GritHubEntity
+
+
+ENVIRONMENTAL_SENSORS = {
+    "airquality": (
+        ("density01", "PM1", "µg/m³", SensorDeviceClass.PM1),
+        ("density25", "PM2.5", "µg/m³", SensorDeviceClass.PM25),
+        ("density4", "PM4", "µg/m³", SensorDeviceClass.PM4),
+        ("density10", "PM10", "µg/m³", SensorDeviceClass.PM10),
+        ("temperature", "Temperature", "°C", SensorDeviceClass.TEMPERATURE),
+        ("humidity", "Humidity", "%", SensorDeviceClass.HUMIDITY),
+        ("carbonDioxide", "Carbon Dioxide", "ppm", SensorDeviceClass.CO2),
+        ("volatileOrganic", "VOC Index", None, None),
+        ("nitrogenOxide", "NOx Index", None, None),
+    ),
+    "pressure": (
+        ("pressure", "Pressure", "mbar", SensorDeviceClass.PRESSURE),
+        ("temperature", "Temperature", "°C", SensorDeviceClass.TEMPERATURE),
+    ),
+    "climate": (
+        ("temperature", "Temperature", "°C", SensorDeviceClass.TEMPERATURE),
+        ("humidity", "Humidity", "%", SensorDeviceClass.HUMIDITY),
+    ),
+}
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -24,6 +47,21 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for dev in coordinator.data.get("devices", {}).get(dev_type, []):
             if obj_id(dev) is not None:
                 entities.append(GritHubGenericDeviceSensor(coordinator, dev_type, dev))
+                for field, name, unit, device_class in ENVIRONMENTAL_SENSORS.get(
+                    dev_type, ()
+                ):
+                    entities.append(
+                        GritHubMeasurementSensor(
+                            coordinator,
+                            entry.entry_id,
+                            dev_type,
+                            dev,
+                            field,
+                            name,
+                            unit,
+                            device_class,
+                        )
+                    )
     for dev_type in DEVICE_TYPES:
         for dev in coordinator.data.get("devices", {}).get(dev_type, []):
             if obj_id(dev) is None:
@@ -119,6 +157,33 @@ class GritHubGenericDeviceSensor(GritHubEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         return self.diagnostic_attributes
+
+
+class GritHubMeasurementSensor(GritHubEntity, SensorEntity):
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator, entry_id, device_type, device, field, name, unit, device_class
+    ):
+        super().__init__(coordinator, device_type, device)
+        self._field = field
+        self._attr_unique_id = (
+            f"grit_hub_{entry_id}_{device_type}_{self._device_id}_{field}"
+        )
+        self._attr_name = name
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+
+    @property
+    def native_value(self):
+        value = self.mqtt_state.get(self._field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return value
+
+    @property
+    def available(self):
+        return self.live_available and self.native_value is not None
 
 
 class GritHubMqttRssiSensor(GritHubEntity, SensorEntity):

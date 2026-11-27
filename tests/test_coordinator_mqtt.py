@@ -282,6 +282,63 @@ def _device_map():
 
 
 class CoordinatorMqttTests(unittest.TestCase):
+    def test_presence_occupancy_comes_only_from_coverage_report(self):
+        parse = coordinator_module._payload_state
+        self.assertEqual(parse("presence", "cov", {"occupied": 1}), {"occupied": True})
+        self.assertEqual(parse("presence", "cov", {"occupied": 0}), {"occupied": False})
+        self.assertIsNone(parse("presence", "cov", {"occupied": 2}))
+        self.assertIsNone(parse("presence", "s", {"occupied": 1}))
+
+    def test_environmental_measurements_follow_device_topics(self):
+        parse = coordinator_module._payload_state
+        air = parse("airquality", "q", {
+            "particulateMatter": [1, 2.5, 4, 10],
+            "temperature": 22, "humidity": 48, "carbonDioxide": 700,
+            "volatileOrganic": 12, "nitrogenOxide": 8,
+        })
+        self.assertEqual(air["density25"], 2.5)
+        self.assertEqual(air["density4"], 4)
+        self.assertEqual(air["carbonDioxide"], 700)
+        self.assertNotIn("density25", parse("airquality", "s", {"particulateMatter": [1, 2, 3]} ) or {})
+        older = parse("airquality", "q", {"particulateMatter": [1, 2, 10]})
+        self.assertEqual(older["density10"], 10)
+        self.assertNotIn("density4", older)
+        compact_air = parse("airquality", "q", {"pm": [1, 2, None, 10], "co2": 750, "t": 22.5, "hum": 43})
+        self.assertEqual(compact_air["density10"], 10)
+        self.assertEqual(compact_air["carbonDioxide"], 750)
+        self.assertNotIn("density4", compact_air)
+        pressure = parse("pressure", "pt", {"pressure": 30.2, "temperature": 21})
+        self.assertEqual(pressure["pressure"], 30.2)
+        self.assertEqual(pressure["temperature"], 21)
+        self.assertEqual(parse("pressure", "pt", {"pr": 52.5, "t": 20})["pressure"], 52.5)
+        self.assertEqual(parse("pressure", "pt", {"pr": -42, "t": 20})["pressure"], -42)
+        self.assertNotIn("pressure", parse("pressure", "s", {"pressure": 30.2}) or {})
+
+    def test_invalid_environmental_measurements_do_not_enter_state(self):
+        parse = coordinator_module._payload_state
+        state = parse("airquality", "q", {
+            "particulateMatter": [True, -1, float("nan"), 10],
+            "humidity": 120, "temperature": "WARMING UP",
+        })
+        self.assertEqual(state, {"density10": 10})
+
+    def test_climate_temperature_and_humidity_follow_device_reports(self):
+        parse = coordinator_module._payload_state
+        self.assertEqual(
+            parse("climate", "sts", {"sts": 1, "t": 21.5, "hum": 48}),
+            {"online": True, "temperature": 21.5, "humidity": 48},
+        )
+        self.assertEqual(
+            parse("climate", "st", {"temperature": -5, "humidity": 99.5}),
+            {"temperature": -5, "humidity": 99.5},
+        )
+        self.assertNotIn(
+            "humidity", parse("climate", "st", {"hum": 120, "t": 20}) or {}
+        )
+        self.assertNotIn(
+            "temperature", parse("climate", "cfg", {"t": 20}) or {}
+        )
+
     def setUp(self):
         connect_patch = mock.patch.object(
             socket.socket,

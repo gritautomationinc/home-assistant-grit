@@ -36,6 +36,7 @@ _ALLOWED_DEVICE_TYPES = frozenset(
         "powerbank",
         "gate",
         "airquality",
+        "climate",
         "dustbin",
         "magswipe",
         "presence",
@@ -75,6 +76,24 @@ _ALLOWED_MQTT_PAYLOAD_KEYS = frozenset(
         "source_timestamp",
         "timestamp",
         "ts",
+        "particulateMatter",
+        "pm",
+        "carbonDioxide",
+        "co2",
+        "temperature",
+        "t",
+        "humidity",
+        "hum",
+        "volatileOrganic",
+        "voc",
+        "nitrogenOxide",
+        "nox",
+        "pressure",
+        "pr",
+        "occupied",
+        "zid",
+        "zoc",
+        "tgts",
     }
 )
 
@@ -415,6 +434,38 @@ class GritLiveMqtt:
             value = payload[key]
             if isinstance(value, bool) or isinstance(value, int):
                 sanitized[key] = value
+            elif (
+                key in {"particulateMatter", "pm"}
+                and isinstance(value, list)
+                and len(value) in {3, 4}
+            ):
+                if all(
+                    item is None
+                    or (
+                        isinstance(item, (int, float))
+                        and not isinstance(item, bool)
+                        and 0 <= item <= 1_000_000
+                    )
+                    for item in value
+                ):
+                    sanitized[key] = list(value)
+            elif key == "tgts" and isinstance(value, list) and len(value) <= 3:
+                targets = []
+                for target in value:
+                    if not isinstance(target, dict):
+                        break
+                    point = {field: target.get(field) for field in ("x", "y", "v", "r")}
+                    if not all(
+                        isinstance(number, (int, float))
+                        and not isinstance(number, bool)
+                        and math.isfinite(number)
+                        and abs(number) <= 10_000
+                        for number in point.values()
+                    ):
+                        break
+                    targets.append(point)
+                else:
+                    sanitized[key] = targets
             elif isinstance(value, float) and math.isfinite(value):
                 sanitized[key] = value
             elif (
