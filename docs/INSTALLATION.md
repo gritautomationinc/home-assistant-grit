@@ -1,6 +1,6 @@
 # Installation
 
-GRIT Hub is an experimental Home Assistant custom integration. `v0.2.0` is the
+GRIT Hub is an experimental Home Assistant custom integration. `v0.3.0` is the
 current release. It installs through HACS as a Custom Repository and is not in
 the default HACS catalogue.
 
