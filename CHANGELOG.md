@@ -3,6 +3,31 @@
 All notable project changes are recorded here. This project uses semantic
 versioning for public releases.
 
+## 0.3.0 — 2026-11-27
+
+### Added
+
+- Graphable Air Quality particulate, gas, temperature, and humidity readings
+  where reported, plus timed air-filter control on supported units.
+- Graphable pressure and Temp/Humidity Sensor readings where reported.
+- Presence occupancy binary sensor and an optional dashboard card with LD2450
+  coverage, live targets, four editable radar zones, behavior and debounce
+  settings, and an explicitly fleet-wide Presence firmware update action.
+
+### Changed
+
+- Refreshed the repository front page with GRIT Home Assistant artwork and a
+  complete entity summary.
+- Outlet control remains an Air Quality accessory rather than a standalone
+  device entity.
+
+### Installation note
+
+The dashboard card is served by the integration, but must be added as a
+JavaScript module resource as described in the README. Existing pre-0.2.0
+config entries may still use the legacy MQTT credential and will raise a
+repair notice until reconfigured with per-hub credentials.
+
 ## 0.2.0 — 2026-11-25
 
 Release for GRIT Hub v1.1.1197 compatibility and safe state authority.

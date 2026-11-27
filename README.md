@@ -8,7 +8,7 @@ Bring GRIT Hub gates, RFiD readers, GRITLock, and connected equipment into Home 
 
 **[Install with HACS](#install-with-hacs) · [Supported entities](#what-you-get) · [Compatibility](docs/COMPATIBILITY.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)**
 
-`v0.2.0` is the current release ([release notes](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.2.0)). This project remains a HACS Custom Repository; it is not listed in the default HACS catalogue.
+`v0.3.0` is the current release ([release notes](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.3.0)). This project remains a HACS Custom Repository; it is not listed in the default HACS catalogue.
 
 ## Install with HACS
 
@@ -60,7 +60,7 @@ The card is served by the integration after Home Assistant starts. It uses the H
 
 ## Compatibility and behavior
 
-The current release was verified with GRIT Hub `v1.1.1197` and Home Assistant `2026.11.1`; the declared minimum Home Assistant version is `2026.3.0`. See [Compatibility](docs/COMPATIBILITY.md) for the tested scope.
+The integration's Hub routes were checked against GRIT Hub `v1.1.1197`, and its Home Assistant smoke tests ran on `2026.11.1`; the declared minimum Home Assistant version is `2026.3.0`. See [Compatibility](docs/COMPATIBILITY.md) for the tested scope.
 
 The integration requires both REST and direct MQTT; HACS does not install a broker, and the Home Assistant MQTT integration is not required. REST provides authenticated discovery, reconciliation, and commands. MQTT supplies live device observations; the integration never publishes to MQTT. Gate and GRITLock command confirmation depends on fresh device state. See [Architecture](docs/ARCHITECTURE.md) for the state and confirmation rules, and [Known limitations](#known-limitations) before relying on a particular entity.
 
