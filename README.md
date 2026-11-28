@@ -8,7 +8,7 @@ Bring GRIT Hub gates, RFiD readers, GRITLock, and connected equipment into Home 
 
 **[Install with HACS](#install-with-hacs) · [Supported entities](#what-you-get) · [Compatibility](docs/COMPATIBILITY.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)**
 
-`v0.3.0` is the current release ([release notes](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.3.0)). This project remains a HACS Custom Repository; it is not listed in the default HACS catalogue.
+`v0.3.1` is the current release ([release notes](https://github.com/gritautomationinc/home-assistant-grit/releases/tag/v0.3.1)). This project remains a HACS Custom Repository; it is not listed in the default HACS catalogue.
 
 ## Install with HACS
 
