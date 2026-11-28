@@ -121,6 +121,24 @@ Rotate credentials at their source first, reconfigure the integration, and then
 revoke the old credentials. Failed validation leaves the existing config entry
 unchanged.
 
+### Replace the legacy shared MQTT credential
+
+After your edge Hub offers a Hub-specific read-only MQTT credential:
+
+1. Sign in to the Hub as an administrator. Open **Admin > Remote Access > MQTT
+   Connections** and copy the username and password shown for this Hub.
+2. In Home Assistant, open **Settings > Devices & services > GRIT Hub** and
+   select **Reconfigure** on the existing entry. Do not delete or add an entry.
+3. Enter the Hub's new MQTT username and password. Leave the API token blank
+   to keep the existing token, then submit.
+4. Confirm the entry loads, MQTT reconnects, and device readings continue to
+   update. The legacy-credential repair notice clears after the successful
+   reload.
+
+If the Hub has not yet received that update, keep the existing connection and
+the repair notice. The integration does not create broker credentials on the
+Hub. Do not publish either credential in logs or support messages.
+
 ## Normal uninstall
 
 1. Delete the GRIT Hub config entry from **Settings > Devices & services**.
