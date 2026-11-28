@@ -28,7 +28,7 @@ class ManifestTests(unittest.TestCase):
             self.manifest["requirements"],
             ["paho-mqtt>=2.1.0,<3"],
         )
-        self.assertEqual(self.manifest["version"], "0.3.0")
+        self.assertEqual(self.manifest["version"], "0.3.1")
         self.assertEqual(self.manifest["iot_class"], "local_push")
 
     def test_home_assistant_mqtt_dependency_is_not_declared(self):

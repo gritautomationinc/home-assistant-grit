@@ -3,6 +3,13 @@
 All notable project changes are recorded here. This project uses semantic
 versioning for public releases.
 
+## 0.3.1 — 2026-11-27
+
+### Fixed
+
+- Use the approved orange GRIT and Home Assistant artwork as the integration
+  icon shown in Home Assistant.
+
 ## 0.3.0 — 2026-11-27
 
 ### Added
